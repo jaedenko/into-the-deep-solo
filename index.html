@@ -89,7 +89,7 @@ const COL={y:[242,194,48],r:[217,68,58],b:[61,111,208]};
 const ACT=[['fwd','Drive forward'],['back','Drive back'],['left','Strafe left'],['right','Strafe right'],['tl','Turn left'],['tr','Turn right'],['up','Lift up'],['dn','Lift down'],['out','Extend out'],['in','Retract'],['act','Score / drop'],['climb','Climb (endgame)'],['cam','Rotate view'],['mode','Drive mode']];
 const DEF={fwd:'KeyW',back:'KeyS',left:'KeyA',right:'KeyD',tl:'KeyQ',tr:'KeyE',up:'ArrowUp',dn:'ArrowDown',out:'ArrowRight',in:'ArrowLeft',act:'Space',climb:'KeyF',cam:'KeyV',mode:'KeyC'};
 const SL=[['drive','Drive speed',20,70],['lift','Lift speed',10,60],['ext','Extension speed',10,60]];
-let B={...DEF},ST={drive:55,lift:30,ext:30},bind=null,S,K={},padA=0,padB=0,padY=0,msgT=0,msgS='',cam=1;
+let B={...DEF},ST={drive:55,lift:30,ext:30},bind=null,S,K={},padA=0,padB=0,padY=0,padOff=false,msgT=0,msgS='',cam=1;
 try{Object.assign(B,JSON.parse(localStorage.getItem('itd-keys')||'{}'));Object.assign(ST,JSON.parse(localStorage.getItem('itd-set')||'{}'))}catch(e){}
 const store=(k,o)=>{try{localStorage.setItem(k,JSON.stringify(o))}catch(e){}};
 const kn=c=>({Space:'Space',ArrowUp:'↑',ArrowDown:'↓',ArrowLeft:'←',ArrowRight:'→'}[c]||c.replace(/^(Key|Digit)/,''));
@@ -156,7 +156,10 @@ function climb(){
   else if(r.stage===1)say('Let the first hang settle, then press again.');
 }
 function pad(){
-  const o={x:0,y:0,rx:0,ly:0,ex:0},p=[...(navigator.getGamepads?navigator.getGamepads():[])].find(x=>x);if(!p)return o;
+  const o={x:0,y:0,rx:0,ly:0,ex:0};let p=null;
+  if(padOff)return o;
+  try{p=[...(navigator.getGamepads?navigator.getGamepads():[])].find(x=>x)}catch(e){padOff=true}
+  if(!p)return o;
   const dz=v=>Math.abs(v)<.15?0:v,bv=i=>p.buttons[i]?p.buttons[i].value:0;
   o.x=dz(p.axes[0]||0);o.y=dz(p.axes[1]||0);o.rx=dz(p.axes[2]||0);o.ly=dz(p.axes[3]||0);o.ex=bv(7)-bv(6);
   const a=bv(0)>.5,b=bv(1)>.5,y=bv(3)>.5;if(a&&!padA)act();if(b&&!padB)climb();if(y&&!padY)S.field=!S.field;padA=a;padB=b;padY=y;return o;
