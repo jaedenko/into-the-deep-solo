@@ -46,10 +46,36 @@
   IF YOU (an AI or a developer) ARE ASKED TO MODIFY THIS: point values, field dimensions,
   and scoring rules should match the official Game Manual Part 2 unless the person
   explicitly asks for a deliberate "house rule" deviation (a few exist and are commented
-  where they occur). The isometric renderer and the collision system are hand-rolled, not
-  a library, so changes to robot geometry should go through the `part()`/`OB()` helpers in
-  robot()/armHit()/tip(), and all three should stay in sync with each other (they all
-  encode the same physical arm geometry).
+  where they occur -- see below). The isometric renderer and the collision system are
+  hand-rolled, not a library, so changes to robot geometry should go through the
+  `part()`/`OB()` helpers in robot()/armHit()/tip(), and all three should stay in sync
+  with each other (they all encode the same physical arm geometry).
+
+  MAINTENANCE NOTE: this header is kept up to date with every round of changes, specifically
+  so the next person or AI working on this file has the full context without re-deriving it.
+  Please keep extending it (not replacing it) when you make further changes.
+
+  CURRENT ARM MODEL (as of this revision): the vertical slide (the "-7" and "-5.4" parts in
+  robot()/PIVOT-adjacent code) never moves or rotates -- it's the fixed lift column. Only the
+  claw + its short reach pivot around a fixed point on that column, PIVOT inches from chassis
+  center. FWD_BASE (forward/intake reach) and BACK_BASE (flipped/scoring reach) are
+  deliberately DIFFERENT lengths: BACK_BASE is bigger specifically so the flipped claw clears
+  the chassis and the fixed slide entirely and ends up outside the robot's footprint, matching
+  the real robot's wrist-flip (it doesn't fold back into itself). If you change either base,
+  sanity-check that side=-1 at E=0 still lands well clear of the chassis half-width (9in) and
+  the slide's own rendered length.
+
+  GAME RULES ENFORCED HERE THAT ARE HOUSE RULES, NOT FROM THE OFFICIAL MANUAL: dropping a
+  specimen in a basket scores like a sample there (8/4 pts) -- the real manual is
+  samples-only for baskets. This was an explicit ask, kept and commented at the point it's
+  scored (see act()).
+
+  ITEM STATE FLAGS on entries in S.items, since there's no formal item "type" system:
+    o.w      -- sitting in a wall queue slot, not yet delivered by intent (grabbable)
+    o.hung   -- scored on a chamber bar (hi/lo); can be SLID along the bar but never re-grabbed
+    o.drop   -- just dropped in the observation zone, awaiting human-player pickup/clipping
+    o.born   -- spawn timestamp, used only for the small pop-in bounce animation
+  A loose item with none of these flags is just sitting free on the floor (grab or sweep it).
 -->
 <html lang="en">
 <head>
@@ -167,10 +193,10 @@ function place(x,y){x=clamp(x,10,134);y=clamp(y,10,134);
 // The vertical slide (PIVOT, fixed on the chassis) never moves. Only the claw+its short extension rail pivot
 // 180 degrees around that fixed point -- forward for intake, backward for scoring -- matching a wrist that
 // swings between the two sides of the slide rather than the whole mechanism mirroring across the chassis.
-const PIVOT=2.5,TIPBASE=8;
+const PIVOT=2.5,FWD_BASE=8,BACK_BASE=13; // BACK_BASE is bigger so the flipped claw clears the chassis and the fixed slide, landing outside the robot's footprint, not inside it
 function armHit(x,y,a,H,E,side=1){
-  const c=Math.cos(a),s=Math.sin(a);
-  for(let t=0;t<=TIPBASE+E+.01;t+=1){const p=PIVOT+side*t,claw=t>TIPBASE+E-3;
+  const c=Math.cos(a),s=Math.sin(a),base=side>0?FWD_BASE:BACK_BASE,reach=base+E;
+  for(let t=0;t<=reach+.01;t+=1){const p=PIVOT+side*t,claw=t>reach-3;
     for(const q of[-3.2,-1,1,3.2]){const px=x+p*c-q*s,py=y+p*s+q*c;
       if(px<1||px>143||py<1||py>143)return true;
       const z0=claw?H:H+3.6,z1=H+7.4;
@@ -234,7 +260,7 @@ function reset(){
       :{x:130,y:130,a:-3*Math.PI/4,vx:0,vy:0,H:0,E:0,hold:'s',hc:'y',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingXfer:false}
   };
 }
-const tip=()=>{const r=S.r,side=r.side||1,p=PIVOT+side*(TIPBASE+r.E);return[r.x+Math.cos(r.a)*p,r.y+Math.sin(r.a)*p]};
+const tip=()=>{const r=S.r,side=r.side||1,base=side>0?FWD_BASE:BACK_BASE,p=PIVOT+side*(base+r.E);return[r.x+Math.cos(r.a)*p,r.y+Math.sin(r.a)*p]};
 const say=t=>{msgS=t;msgT=2.8};
 // Scoring: a running total. AUTO/TELEOP share the same point values (Table 10-3) and pieces are counted once, not doubled.
 const total=()=>S.score;
@@ -368,23 +394,30 @@ function update(dt){
     if(d<min){const k2=d>.01?1/d:0;o.x=clamp(r.x+dx*k2*min,2,142);o.y=clamp(r.y+dy*k2*min,2,142)}});
   if(!r.hold){
     const[tx,ty]=tip();
-    // Specimens hanging on the wall (or on a chamber bar) can be grabbed regardless of lift height --
-    // they hang at a fixed height, not on the floor.
-    const wi=S.items.findIndex(o=>(o.w||o.hung)&&o.drop==null&&Math.hypot(o.x-tx,o.y-ty)<5.5);
+    // Specimens hanging on the wall can be grabbed regardless of lift height -- they hang at a fixed height.
+    const wi=S.items.findIndex(o=>o.w&&o.drop==null&&Math.hypot(o.x-tx,o.y-ty)<5.5); // o.hung deliberately excluded: a scored specimen can only be slid, never re-grabbed
     if(wi>=0){const o=S.items[wi];r.hold=o.t;r.hc=o.c;S.items.splice(wi,1)}
-    else if(r.H<=3){
-      const i=S.items.findIndex(o=>o.c!=='b'&&o.drop==null&&!o.w&&!o.hung&&Math.hypot(o.x-tx,o.y-ty)<4.5);
-      if(i>=0){const o=S.items[i];r.hold=o.t;r.hc=o.c;S.items.splice(i,1)}
-    }else if(r.H<=14){
-      // Claw held slightly above the floor sweeps loose samples along the horizontal extension's reach
-      // instead of grabbing them -- push scattered samples toward the human player without picking them up.
-      S.items.forEach(o=>{if(o.c==='b'||o.drop!=null||o.w||o.hung)return;const dx=o.x-tx,dy=o.y-ty,d=Math.hypot(dx,dy),min=3.6;
-        if(d<min){const k2=d>.01?1/d:0;o.x=clamp(tx+dx*k2*min,2,142);o.y=clamp(ty+dy*k2*min,2,142)}});
-      // Hung specimens can also be nudged sideways along the bar to make room, but never on top of a neighbor.
-      const near=S.items.find(o=>o.hung&&Math.hypot(o.x-tx,o.y-ty)<6);
-      if(near){let ny=clamp(ty,59,85);
-        S.items.forEach(o=>{if(o===near||o.hung!==near.hung)return;if(Math.abs(ny-o.y)<4.4)ny=ny>o.y?o.y+4.4:o.y-4.4});
-        near.y=clamp(ny,59,85);
+    else{
+      // Grab only when the claw is right down at floor level; otherwise (any height up to ~16in) it
+      // sweeps/pushes instead of grabbing -- this used to be a strict either/or split by height band,
+      // which made it easy to accidentally miss the sweep window. Now sweeping is available whenever
+      // there's nothing to grab, across the whole practical claw-height range.
+      let grabbed=false;
+      if(r.H<=3){
+        const i=S.items.findIndex(o=>o.c!=='b'&&o.drop==null&&!o.w&&!o.hung&&Math.hypot(o.x-tx,o.y-ty)<4.5);
+        if(i>=0){const o=S.items[i];r.hold=o.t;r.hc=o.c;S.items.splice(i,1);grabbed=true}
+      }
+      if(!grabbed&&r.H<=16){
+        // Claw sweeps loose samples along the horizontal extension's reach instead of grabbing them --
+        // push scattered samples toward the human player without picking them up.
+        S.items.forEach(o=>{if(o.c==='b'||o.drop!=null||o.w||o.hung)return;const dx=o.x-tx,dy=o.y-ty,d=Math.hypot(dx,dy),min=3.8;
+          if(d<min){const k2=d>.01?1/d:0;o.x=clamp(tx+dx*k2*min,2,142);o.y=clamp(ty+dy*k2*min,2,142)}});
+        // Hung specimens can also be nudged sideways along the bar to make room, but never on top of a neighbor.
+        const near=S.items.find(o=>o.hung&&Math.hypot(o.x-tx,o.y-ty)<6);
+        if(near){let ny=clamp(ty,59,85);
+          S.items.forEach(o=>{if(o===near||o.hung!==near.hung)return;if(Math.abs(ny-o.y)<4.4)ny=ny>o.y?o.y+4.4:o.y-4.4});
+          near.y=clamp(ny,59,85);
+        }
       }
     }
   }
@@ -419,16 +452,16 @@ function robot(){
   const part=(arr,p,q,z,l,w,h,col,ang)=>{const[x,y]=L(p,q),[u,v]=R(x,y);arr.push({d:u+v,f:()=>OB(x,y,z,l,w,h,ang==null?a:ang,col)})};
   const G1=[],G2=[];
   part(G1,0,0,z0+1.5,18,18,3,[226,236,239]);
-  [[-5.5,-10.5],[5.5,-10.5],[-5.5,10.5],[5.5,10.5]].forEach(([p,q])=>part(G1,p,q,z0,7,3,4.5,[34,52,58]));
+  [[-5.5,-10.5],[5.5,-10.5],[-5.5,10.5],[5.5,10.5]].forEach(([p,q])=>part(G1,p,q,z0,7,3,4.5,[54,60,64]));
   G1.sort((m,n)=>m.d-n.d).forEach(o=>o.f());
   const th=Math.max(22,r.H+10),zh=z0+r.H,E=r.E,jaw=r.jaw??1,jgap=1.1+2.3*jaw;
-  const reach=TIPBASE+E,tipP=PIVOT+side*reach,midP=PIVOT+side*reach/2,wristAng=a+(side<0?Math.PI:0);
+  const base=side>0?FWD_BASE:BACK_BASE,reach=base+E,tipP=PIVOT+side*reach,midP=PIVOT+side*reach/2,wristAng=a+(side<0?Math.PI:0);
   // fixed vertical slide -- never moves or mirrors
   part(G2,-7,0,z0+4.5,3.6,11,th,[235,235,230]);
   part(G2,-5.4,0,zh+3.6,5,8.6,5.2,[242,194,48]);
   // wrist bracket, the pivot point itself
-  part(G2,PIVOT,0,zh+4.6,4,4.6,2.6,[96,120,128]);
-  part(G2,midP,0,zh+4.9,reach-1,3,2.2,[150,175,182],wristAng);
+  part(G2,PIVOT,0,zh+4.6,4,4.6,2.6,[242,194,48]);
+  part(G2,midP,0,zh+4.9,reach-1,3,2.2,[232,232,227],wristAng);
   [-jgap,jgap].forEach(q=>part(G2,tipP,q,zh,2.6,1.2,7,[242,194,48],wristAng));
   if(r.hold)part(G2,tipP,0,zh+.6,1.8,4.4,1.8,COL[r.hc||'y'],wristAng+Math.PI/2);
   G2.sort((m,n)=>m.d-n.d).forEach(o=>o.f());
