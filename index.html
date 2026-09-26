@@ -1,4 +1,56 @@
 <!DOCTYPE html>
+<!--
+  INTO THE DEEP: SOLO RUN
+  =======================
+  WHAT THIS IS: A single-player browser simulation of one match of FIRST Tech Challenge's
+  2024-25 game, "Into the Deep" (presented by RTX). It is not an official FIRST product;
+  it's a fan-made practice/fun tool built for one specific person's own robot design, based
+  on the official Game Manual Part 2 (a copy was used to check scoring values, field
+  dimensions, and robot size limits) plus reference photos/video of that person's real robot.
+
+  GOAL OF THE GAME (for the player): score as many points as possible in one match --
+  30s autonomous, an 8s transition, 2:00 teleop, with the ascent (climbing) opportunity
+  in the last 30s -- by cycling samples/specimens between the central "submersible" and
+  the baskets/chamber, then climbing the rungs before the buzzer.
+
+  HOW TO READ THIS FILE: it's intentionally a single self-contained HTML file (no build
+  step, no external JS files) so it can be opened directly or dropped into a static host.
+  Everything lives in one <script> tag at the bottom. Key building blocks, top to bottom:
+    - Constants: PTS (point values), LIM (robot size limits), field zone polygons (OBS,
+      NET, ASC), OBST (3D collision boxes for posts/bars/rungs), key bindings (ACT/DEF).
+    - Isometric projection helpers (R, P, P2, OB, poly, pl): world inches -> screen pixels,
+      viewed from one of the four field corners (the `cam` variable), used for the whole
+      3D-looking scene drawn on a single 2D <canvas> -- there is no WebGL/3D library here.
+    - Game state lives entirely in one object, `S` (created fresh by reset()). `S.r` is the
+      robot: position/heading (x,y,a), drivetrain velocity (vx,vy), lift height (H),
+      horizontal slide extension (E), which way the claw is currently pointed (side: 1 =
+      forward for intake, -1 = flipped 180 degrees around a FIXED pivot point on the
+      vertical slide, for scoring -- the slide itself never moves or mirrors, only the
+      claw + its short reach do, matching the real robot's wrist-flip mechanism).
+    - update(dt) runs the whole simulation one frame at a time: input -> collision-checked
+      lift/extension/rotation/translation -> game-piece pickup/pushing/sweeping -> the
+      automated human-player specimen pipeline -> climb physics -> auto phase transitions.
+    - act()/climb() are the two discrete player actions (score-or-drop, and hang), bound to
+      a configurable key (see B/DEF) or a gamepad button.
+    - armHit(...) is the arm/claw collision test against OBST; "soft" obstacles (bars,
+      rungs) can be hooked by the claw tip but not passed through by the rigid arm body.
+      Extending/raising is collision-checked; retracting/lowering is always allowed (it
+      can't create a new collision), which is what prevents the arm from ever getting
+      permanently stuck.
+    - robot()/draw()/hpDraw() render the scene each frame; hud() updates the DOM overlays
+      (scoreboard, status line, hint text). All of it is redrawn every animation frame in
+      loop() -- there's no separate "dirty rectangle" optimization.
+    - Everything under "Setup"/"Controls"/"Speeds" in the side panel, plus best score, is
+      persisted to localStorage so it survives a page reload.
+
+  IF YOU (an AI or a developer) ARE ASKED TO MODIFY THIS: point values, field dimensions,
+  and scoring rules should match the official Game Manual Part 2 unless the person
+  explicitly asks for a deliberate "house rule" deviation (a few exist and are commented
+  where they occur). The isometric renderer and the collision system are hand-rolled, not
+  a library, so changes to robot geometry should go through the `part()`/`OB()` helpers in
+  robot()/armHit()/tip(), and all three should stay in sync with each other (they all
+  encode the same physical arm geometry).
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -112,10 +164,14 @@ function place(x,y){x=clamp(x,10,134);y=clamp(y,10,134);
   return[x,y]}
 // The whole four-bar-plus-slide assembly rotates 180 degrees about the chassis center to place without turning
 // the drivetrain -- side=1 is forward (intake), side=-1 swings the same assembly out the back (score/transfer).
+// The vertical slide (PIVOT, fixed on the chassis) never moves. Only the claw+its short extension rail pivot
+// 180 degrees around that fixed point -- forward for intake, backward for scoring -- matching a wrist that
+// swings between the two sides of the slide rather than the whole mechanism mirroring across the chassis.
+const PIVOT=2.5,TIPBASE=8;
 function armHit(x,y,a,H,E,side=1){
   const c=Math.cos(a),s=Math.sin(a);
-  for(let p=9;p<=11.6+E+.01;p+=1){const claw=p>9+E;
-    for(const q of[-3.2,-1,1,3.2]){const px=x+side*p*c-q*s,py=y+side*p*s+q*c;
+  for(let t=0;t<=TIPBASE+E+.01;t+=1){const p=PIVOT+side*t,claw=t>TIPBASE+E-3;
+    for(const q of[-3.2,-1,1,3.2]){const px=x+p*c-q*s,py=y+p*s+q*c;
       if(px<1||px>143||py<1||py>143)return true;
       const z0=claw?H:H+3.6,z1=H+7.4;
       for(const o of OBST){if(claw&&o.soft)continue;if(px>o.x0&&px<o.x1&&py>o.y0&&py<o.y1&&z1>o.z0&&z0<o.z1)return true}}}
@@ -164,13 +220,21 @@ function OB(cx,cy,z,l,w,h,a,c){
 function reset(){
   const it=[];
   [[48,[6,17,28],'y'],[96,[6,17,28],'r'],[48,[116,127,138],'b'],[96,[116,127,138],'y']].forEach(([x,ys,c])=>ys.forEach(y=>it.push({x,y,t:'s',c,a:0})));
-  for(let i=0;i<SET.n;i++)it.push({x:51+Math.random()*42,y:58.5+Math.random()*27,t:'s',c:'yrb'[i%3],a:Math.random()*3.14});
+  for(let i=0;i<SET.n;i++){
+    let x,y,tries=0;
+    do{x=51+Math.random()*42;y=58.5+Math.random()*27;tries++}
+    while(tries<20&&it.some(o=>o.t==='s'&&Math.hypot(o.x-x,o.y-y)<4.6));
+    it.push({x,y,t:'s',c:'yrb'[i%3],a:Math.random()*3.14});
+  }
   const wallN=SET.pre==='p'?1:2;
   for(let i=0;i<wallN;i++)it.push({x:SLOTS[i][0],y:SLOTS[i][1],t:'p',c:'r',a:0,w:1,born:0});
-  S={t:0,score:0,autoSnap:0,run:false,over:false,paused:false,field:true,stock:3,pend:0,clip:0,hpT:1,drop:null,pops:[],items:it,bskt:{hi:[],lo:[]},cnt:{net:0,bh:0,bl:0,ch:0,cl:0,asc:0},prevHold:SET.pre,
-    r:{x:108,y:132,a:-Math.PI/2,vx:0,vy:0,H:0,E:0,hold:SET.pre,hc:SET.pre==='s'?'y':'r',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingXfer:false}};
+  S={t:0,score:0,autoSnap:0,run:false,over:false,paused:false,field:true,stock:0,pend:0,clip:0,drop:null,pops:[],items:it,bskt:{hi:[],lo:[]},cnt:{net:0,bh:0,bl:0,ch:0,cl:0,asc:0},prevHold:SET.pre,
+    r:SET.pre==='p'
+      ?{x:130,y:14,a:0,vx:0,vy:0,H:0,E:0,hold:'p',hc:'r',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingXfer:false}
+      :{x:130,y:130,a:-3*Math.PI/4,vx:0,vy:0,H:0,E:0,hold:'s',hc:'y',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingXfer:false}
+  };
 }
-const tip=()=>{const r=S.r,d=LIM.body/2+2+r.E,sd=r.side||1;return[r.x+sd*Math.cos(r.a)*d,r.y+sd*Math.sin(r.a)*d]};
+const tip=()=>{const r=S.r,side=r.side||1,p=PIVOT+side*(TIPBASE+r.E);return[r.x+Math.cos(r.a)*p,r.y+Math.sin(r.a)*p]};
 const say=t=>{msgS=t;msgT=2.8};
 // Scoring: a running total. AUTO/TELEOP share the same point values (Table 10-3) and pieces are counted once, not doubled.
 const total=()=>S.score;
@@ -178,7 +242,7 @@ function add(p,l,k){S.score+=p;if(k)S.cnt[k]=(S.cnt[k]||0)+1;S.pops.push({x:S.r.
 function act(){
   const r=S.r;if(!S.run||S.over||r.hang||ph()===1)return;
   const[tx,ty]=tip(),eff=r.H+3;
-  const nb=Math.hypot(tx-136,ty-136)<7.5;
+  const nb=Math.hypot(tx-136,ty-136)<11;  // generous basket aim radius
   if(r.hold==='s'){
     if(nb&&eff>=LIM.bHi){add(PTS.high,'','bh');S.bskt.hi.push(r.hc||'y');S.drop={x:tx,y:ty,z:eff,to:43,t:S.t}}
     else if(nb&&eff>=LIM.bLo){add(PTS.low,'','bl');S.bskt.lo.push(r.hc||'y');S.drop={x:tx,y:ty,z:eff,to:25,t:S.t}}
@@ -187,8 +251,14 @@ function act(){
     else{S.items.push({x:tx,y:ty,t:'s',c:r.hc||'y',a:r.a,born:S.t});say('Dropped on the field.')}
     r.hold=null;
   }else if(r.hold==='p'){
-    if(tx>88&&tx<104&&ty>53&&ty<91){
-      if(r.H>=LIM.cHi-4)add(PTS.sh,'','ch');else if(r.H>=LIM.cLo-4)add(PTS.sl,'','cl');else return say('Lift the specimen above a chamber bar first.');
+    if(tx>82&&tx<110&&ty>47&&ty<97){
+      const hi=r.H>=LIM.cHi-7,lo=!hi&&r.H>=LIM.cLo-7;
+      if(!hi&&!lo)return say('Lift the specimen above a chamber bar first.');
+      const lvl=hi?'hi':'lo',bar=96.7,slots=[72,64,80,57,87];
+      const openY=slots.find(sy=>!S.items.some(o=>o.hung===lvl&&Math.abs(o.y-sy)<4.4));
+      if(openY==null)return say('That chamber is full -- push a specimen aside with your claw first.');
+      S.items.push({x:bar,y:openY,t:'p',hung:lvl,c:r.hc||'r',a:0,born:S.t});
+      add(hi?PTS.sh:PTS.sl,'',hi?'ch':'cl');
       r.hold=null;
     // House rule (per your request, not an official rule): a specimen dropped in a basket scores the same as a sample there.
     }else if(nb&&eff>=LIM.bHi){add(PTS.high,'','bh');S.bskt.hi.push(r.hc||'r');S.drop={x:tx,y:ty,z:eff,to:43,t:S.t};r.hold=null}
@@ -255,11 +325,12 @@ function update(dt){
   S.prevHold=r.hold;
   if(!S.pk&&S.t>=30){S.pk=1;if(pip(r.x,r.y,OBS))add(PTS.park,'','parkAuto');S.autoSnap=S.score}
   if(S.t>=158)return finish();
-  // human player: takes dropped samples from the observation zone, clips them, and hangs them on the wall
+  // Human player: only ever produces a NEW specimen after the robot deposits a sample in the observation zone
+  // (no background timer/stockpile). Once clipped, it's placed on the first open wall slot -- or queued if the
+  // wall is currently full, and delivered as soon as a slot frees up (i.e. the robot takes one).
   for(let i=S.items.length-1;i>=0;i--){const o=S.items[i];if(o.drop!=null&&S.t-o.drop>1.5){S.items.splice(i,1);S.pend++}}
   if(S.clip>0){S.clip-=dt;if(S.clip<=0)S.stock++}else if(S.pend>0){S.pend--;S.clip=3.5}
-  S.hpT-=dt;
-  if(S.hpT<=0&&S.stock>0){const s=SLOTS.find(([x,y])=>!S.items.some(i=>Math.hypot(i.x-x,i.y-y)<6));if(s){S.items.push({x:s[0],y:s[1],t:'p',c:'r',a:0,w:1,born:S.t});S.stock--;S.hpT=1}}
+  if(S.stock>0){const s=SLOTS.find(([x,y])=>!S.items.some(i=>Math.hypot(i.x-x,i.y-y)<6));if(s){S.items.push({x:s[0],y:s[1],t:'p',c:'r',a:0,w:1,born:S.t});S.stock--}}
   if(ph()===1){r.vx=r.vy=0;return}
   // Climb: the vertical slide is what hoists the chassis. It extends up to hook the rung, then
   // retracts, and the chassis rises by exactly the amount the slide has pulled in.
@@ -297,14 +368,24 @@ function update(dt){
     if(d<min){const k2=d>.01?1/d:0;o.x=clamp(r.x+dx*k2*min,2,142);o.y=clamp(r.y+dy*k2*min,2,142)}});
   if(!r.hold){
     const[tx,ty]=tip();
-    if(r.H<=3){
-      const i=S.items.findIndex(o=>o.c!=='b'&&o.drop==null&&!o.w&&Math.hypot(o.x-tx,o.y-ty)<4.5);
+    // Specimens hanging on the wall (or on a chamber bar) can be grabbed regardless of lift height --
+    // they hang at a fixed height, not on the floor.
+    const wi=S.items.findIndex(o=>(o.w||o.hung)&&o.drop==null&&Math.hypot(o.x-tx,o.y-ty)<5.5);
+    if(wi>=0){const o=S.items[wi];r.hold=o.t;r.hc=o.c;S.items.splice(wi,1)}
+    else if(r.H<=3){
+      const i=S.items.findIndex(o=>o.c!=='b'&&o.drop==null&&!o.w&&!o.hung&&Math.hypot(o.x-tx,o.y-ty)<4.5);
       if(i>=0){const o=S.items[i];r.hold=o.t;r.hc=o.c;S.items.splice(i,1)}
     }else if(r.H<=14){
-      // Claw held slightly above the floor sweeps loose samples along instead of grabbing them --
-      // useful for pushing scattered samples toward the human player without picking them up.
-      S.items.forEach(o=>{if(o.c==='b'||o.drop!=null||o.w)return;const dx=o.x-tx,dy=o.y-ty,d=Math.hypot(dx,dy),min=3.6;
+      // Claw held slightly above the floor sweeps loose samples along the horizontal extension's reach
+      // instead of grabbing them -- push scattered samples toward the human player without picking them up.
+      S.items.forEach(o=>{if(o.c==='b'||o.drop!=null||o.w||o.hung)return;const dx=o.x-tx,dy=o.y-ty,d=Math.hypot(dx,dy),min=3.6;
         if(d<min){const k2=d>.01?1/d:0;o.x=clamp(tx+dx*k2*min,2,142);o.y=clamp(ty+dy*k2*min,2,142)}});
+      // Hung specimens can also be nudged sideways along the bar to make room, but never on top of a neighbor.
+      const near=S.items.find(o=>o.hung&&Math.hypot(o.x-tx,o.y-ty)<6);
+      if(near){let ny=clamp(ty,59,85);
+        S.items.forEach(o=>{if(o===near||o.hung!==near.hung)return;if(Math.abs(ny-o.y)<4.4)ny=ny>o.y?o.y+4.4:o.y-4.4});
+        near.y=clamp(ny,59,85);
+      }
     }
   }
 }
@@ -341,12 +422,15 @@ function robot(){
   [[-5.5,-10.5],[5.5,-10.5],[-5.5,10.5],[5.5,10.5]].forEach(([p,q])=>part(G1,p,q,z0,7,3,4.5,[34,52,58]));
   G1.sort((m,n)=>m.d-n.d).forEach(o=>o.f());
   const th=Math.max(22,r.H+10),zh=z0+r.H,E=r.E,jaw=r.jaw??1,jgap=1.1+2.3*jaw;
-  part(G2,-7*side,0,z0+4.5,3.6,11,th,[190,54,44]);
-  part(G2,-5.4*side,0,zh+3.6,5,8.6,5.2,[120,32,26]);
-  part(G2,2.5*side,0,zh+4.6,13,4.6,2.6,[96,120,128]);
-  if(E>.2)part(G2,side*((11+E)/2-1),0,zh+4.9,7+E,3,2.2,[150,175,182]);
-  [-jgap,jgap].forEach(q=>part(G2,side*(10.3+E),q,zh,2.6,1.2,7,[242,194,48]));
-  if(r.hold)part(G2,side*(10.3+E),0,zh+.6,1.8,4.4,1.8,COL[r.hc||'y'],a+Math.PI/2);
+  const reach=TIPBASE+E,tipP=PIVOT+side*reach,midP=PIVOT+side*reach/2,wristAng=a+(side<0?Math.PI:0);
+  // fixed vertical slide -- never moves or mirrors
+  part(G2,-7,0,z0+4.5,3.6,11,th,[235,235,230]);
+  part(G2,-5.4,0,zh+3.6,5,8.6,5.2,[242,194,48]);
+  // wrist bracket, the pivot point itself
+  part(G2,PIVOT,0,zh+4.6,4,4.6,2.6,[96,120,128]);
+  part(G2,midP,0,zh+4.9,reach-1,3,2.2,[150,175,182],wristAng);
+  [-jgap,jgap].forEach(q=>part(G2,tipP,q,zh,2.6,1.2,7,[242,194,48],wristAng));
+  if(r.hold)part(G2,tipP,0,zh+.6,1.8,4.4,1.8,COL[r.hc||'y'],wristAng+Math.PI/2);
   G2.sort((m,n)=>m.d-n.d).forEach(o=>o.f());
 }
 function draw(){
@@ -368,7 +452,7 @@ function draw(){
   wall(0,0,0,F,12,'#2b3c42');wall(0,0,F,0,12,'#34474e');
   {const[X,Y]=P(tx,ty,0);g.strokeStyle=r.hold?'#5be3a1':'rgba(255,255,255,.75)';g.lineWidth=2;g.beginPath();g.ellipse(X,Y,15,7.5,0,0,7);g.stroke()}
   const E=[],ent=(x,y,f)=>{const[u,v]=R(x,y);E.push({d:u+v,f})};
-  S.items.forEach(o=>ent(o.x,o.y,()=>{const age=o.born!=null?S.t-o.born:9,bz=age<.35?(.35-age)*10:0,z=(o.w?3.5:0)+bz;OB(o.x,o.y,z,4.4,1.8,1.8,o.a,COL[o.c]);if(o.t==='p')OB(o.x,o.y,z+1.8,1,2.8,.9,o.a,[250,250,250])}));
+  S.items.forEach(o=>ent(o.x,o.y,()=>{const age=o.born!=null?S.t-o.born:9,bz=age<.35?(.35-age)*10:0,z=o.hung?(o.hung==='hi'?26:13):(o.w?3.5:0)+bz,ang=o.hung?Math.PI/2:o.a;OB(o.x,o.y,z,4.4,1.8,1.8,ang,COL[o.c]);if(o.t==='p')OB(o.x,o.y,z+1.8,1,2.8,.9,ang,[250,250,250])}));
   [[49,57],[95,57],[49,87],[95,87]].forEach(([x,y])=>ent(x,y,()=>OB(x,y,0,2.2,2.2,32,0,[214,222,224])));
   [13,26].forEach(h=>{ent(96.7,72,()=>OB(96.7,72,h-.7,1.4,32,1.4,0,[217,68,58]));ent(47.3,72,()=>OB(47.3,72,h-.7,1.4,32,1.4,0,[61,111,208]))});
   [20,36].forEach(h=>{ent(72,88.7,()=>OB(72,88.7,h-.7,48,1.4,1.4,0,[232,238,240]));ent(72,55.3,()=>OB(72,55.3,h-.7,48,1.4,1.4,0,[232,238,240]))});
