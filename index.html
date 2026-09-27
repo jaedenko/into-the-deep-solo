@@ -158,7 +158,8 @@ button:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
       <p id="hint"></p>
     </div>
     <div>
-      <div class="side"><h2>Controls</h2><div id="kb"></div><button id="rk">Reset keys</button><p>Click a key, then press its new key (Esc cancels). Gamepad: left stick drive, right stick turn and lift, triggers extend, A score, B climb, Y drive mode.</p></div>
+      <div class="side"><h2>Controls</h2><div id="kb"></div><button id="rk">Reset keys</button><p>Click a key, then press its new key (Esc cancels). Gamepad: left stick drive, right stick turn and lift, triggers extend.</p></div>
+      <div class="side"><h2>Gamepad buttons</h2><div id="gb"></div><p>Click, then press the gamepad button.</p></div>
       <div class="side"><h2>Setup</h2><div class="kr"><span>Preload</span><select id="pre"><option value="p">Specimen</option><option value="s">Sample</option></select></div><div class="kr"><span>Submersible samples</span><b id="vn"></b></div><input type="range" id="nsub" min="0" max="60"><p>Applies when the next match starts or when you press the reset key.</p>
         <div class="kr"><span>Auto-transfer after intake</span><input type="checkbox" id="axfer"></div>
         <div class="kr"><span>Auto-retract slide after intake</span><input type="checkbox" id="ainr"></div>
@@ -190,13 +191,15 @@ function place(x,y){x=clamp(x,10,134);y=clamp(y,10,134);
   return[x,y]}
 // The whole four-bar-plus-slide assembly rotates 180 degrees about the chassis center to place without turning
 // the drivetrain -- side=1 is forward (intake), side=-1 swings the same assembly out the back (score/transfer).
-// The vertical slide (PIVOT, fixed on the chassis) never moves. Only the claw+its short extension rail pivot
-// 180 degrees around that fixed point -- forward for intake, backward for scoring -- matching a wrist that
-// swings between the two sides of the slide rather than the whole mechanism mirroring across the chassis.
-const PIVOT=2.5,FWD_BASE=8,BACK_BASE=13; // BACK_BASE is bigger so the flipped claw clears the chassis and the fixed slide, landing outside the robot's footprint, not inside it
+// The vertical slide (the fixed -7/-5.4 posts in robot()) never moves. The ENTIRE horizontal extension
+// assembly -- not just the claw tip -- relocates to sit outside the chassis on whichever side matches the
+// current orientation: side=1 puts it just past the front edge (intake), side=-1 puts the whole thing just
+// past the back edge (scoring), matching a wrist+rail that swings from one side of the fixed slide to the
+// other rather than pivoting from a point still inside the chassis.
+const OUT=9.5; // just past the chassis half-width (9in), so the rail's near end already clears the frame
 function armHit(x,y,a,H,E,side=1){
-  const c=Math.cos(a),s=Math.sin(a),base=side>0?FWD_BASE:BACK_BASE,reach=base+E;
-  for(let t=0;t<=reach+.01;t+=1){const p=PIVOT+side*t,claw=t>reach-3;
+  const c=Math.cos(a),s=Math.sin(a),reach=OUT+2+E;
+  for(let t=OUT;t<=reach+.01;t+=1){const p=side*t,claw=t>reach-3;
     for(const q of[-3.2,-1,1,3.2]){const px=x+p*c-q*s,py=y+p*s+q*c;
       if(px<1||px>143||py<1||py>143)return true;
       const z0=claw?H:H+3.6,z1=H+7.4;
@@ -206,15 +209,22 @@ const COL={y:[242,194,48],r:[217,68,58],b:[61,111,208]};
 const ACT=[['fwd','Drive forward'],['back','Drive back'],['left','Strafe left'],['right','Strafe right'],['tl','Turn left'],['tr','Turn right'],['up','Lift up'],['dn','Lift down'],['out','Extend out'],['in','Retract'],['act','Score / drop'],['climb','Climb (endgame)'],['cam','Rotate view'],['mode','Drive mode'],['flip','Flip arm to back'],['pause','Pause / resume'],['full','Full screen'],['reset','Reset match']];
 const DEF={fwd:'KeyW',back:'KeyS',left:'KeyA',right:'KeyD',tl:'KeyQ',tr:'KeyE',up:'ArrowUp',dn:'ArrowDown',out:'ArrowRight',in:'ArrowLeft',act:'Space',climb:'KeyF',cam:'KeyV',mode:'KeyC',flip:'KeyX',pause:'KeyP',full:'KeyG',reset:'KeyR'};
 const SL=[['drive','Drive speed',20,110],['lift','Lift speed',10,90],['ext','Extension speed',10,90]];
-let B={...DEF},ST={drive:80,lift:48,ext:48},bind=null,S,K={},padA=0,padB=0,padY=0,padOff=false,msgT=0,msgS='',cam=1,SET={pre:'p',n:18},AUTO={xfer:true,inR:true,outR:true};
-try{Object.assign(B,JSON.parse(localStorage.getItem('itd-keys')||'{}'));Object.assign(ST,JSON.parse(localStorage.getItem('itd-set')||'{}'));Object.assign(SET,JSON.parse(localStorage.getItem('itd-setup')||'{}'));Object.assign(AUTO,JSON.parse(localStorage.getItem('itd-auto')||'{}'))}catch(e){}
+const HPL=[['time','Human player clip time',1,8]]; // reuses the same slider renderer, seconds not in/s
+let B={...DEF},ST={drive:80,lift:48,ext:48},bind=null,S,K={},padA=0,padB=0,padY=0,padOff=false,msgT=0,msgS='',cam=1,SET={pre:'p',n:18},AUTO={xfer:true,inR:true,outR:true},HP={time:3.5},GP={act:0,climb:1,mode:3},gpBind=null;
+try{Object.assign(B,JSON.parse(localStorage.getItem('itd-keys')||'{}'));Object.assign(ST,JSON.parse(localStorage.getItem('itd-set')||'{}'));Object.assign(SET,JSON.parse(localStorage.getItem('itd-setup')||'{}'));Object.assign(AUTO,JSON.parse(localStorage.getItem('itd-auto')||'{}'));Object.assign(HP,JSON.parse(localStorage.getItem('itd-hp')||'{}'));Object.assign(GP,JSON.parse(localStorage.getItem('itd-gp')||'{}'))}catch(e){}
 const store=(k,o)=>{try{localStorage.setItem(k,JSON.stringify(o))}catch(e){}};
 const kn=c=>({Space:'Space',ArrowUp:'↑',ArrowDown:'↓',ArrowLeft:'←',ArrowRight:'→'}[c]||c.replace(/^(Key|Digit)/,''));
 function keys(){$('kb').innerHTML=ACT.map(([a,l])=>`<div class="kr"><span>${l}</span><button data-a="${a}" class="${bind===a?'on':''}">${bind===a?'Press key':kn(B[a])}</button></div>`).join('')}
-function sliders(){$('sl').innerHTML=SL.map(([k,l,a,b])=>`<div class="kr"><span>${l}</span><b id="v${k}">${ST[k]} in/s</b></div><input type="range" data-k="${k}" min="${a}" max="${b}" value="${ST[k]}">`).join('')}
+const GPL=[['act','Score / drop'],['climb','Climb'],['mode','Drive mode']];
+function gpKeys(){$('gb').innerHTML=GPL.map(([a,l])=>`<div class="kr"><span>${l}</span><button data-gp="${a}" class="${gpBind===a?'on':''}">${gpBind===a?'Press button':'Button '+GP[a]}</button></div>`).join('')}
+$('gb').onclick=e=>{const a=e.target.dataset&&e.target.dataset.gp;if(a){gpBind=a;gpKeys();e.target.blur()}};
+function sliders(){$('sl').innerHTML=SL.map(([k,l,a,b])=>`<div class="kr"><span>${l}</span><b id="v${k}">${ST[k]} in/s</b></div><input type="range" data-k="${k}" min="${a}" max="${b}" value="${ST[k]}">`).join('')
+  +HPL.map(([k,l,a,b])=>`<div class="kr"><span>${l}</span><b id="vhp${k}">${HP[k]}s</b></div><input type="range" data-hp="${k}" min="${a}" max="${b}" step="0.5" value="${HP[k]}">`).join('')}
 $('kb').onclick=e=>{const a=e.target.dataset&&e.target.dataset.a;if(a){bind=a;keys();e.target.blur()}};
 $('rk').onclick=()=>{B={...DEF};bind=null;store('itd-keys',B);keys()};
-$('sl').oninput=e=>{const k=e.target.dataset.k;if(k){ST[k]=+e.target.value;$('v'+k).textContent=ST[k]+' in/s';store('itd-set',ST)}};
+$('sl').oninput=e=>{const k=e.target.dataset.k,hk=e.target.dataset.hp;
+  if(k){ST[k]=+e.target.value;$('v'+k).textContent=ST[k]+' in/s';store('itd-set',ST)}
+  if(hk){HP[hk]=+e.target.value;$('vhp'+hk).textContent=HP[hk]+'s';store('itd-hp',HP)}};
 $('sl').onchange=e=>e.target.blur();
 function initSetup(){$('pre').value=SET.pre;$('nsub').value=SET.n;$('vn').textContent=SET.n;
   $('pre').onchange=e=>{SET.pre=e.target.value;store('itd-setup',SET);e.target.blur()};
@@ -256,11 +266,11 @@ function reset(){
   for(let i=0;i<wallN;i++)it.push({x:SLOTS[i][0],y:SLOTS[i][1],t:'p',c:'r',a:0,w:1,born:0});
   S={t:0,score:0,autoSnap:0,run:false,over:false,paused:false,field:true,stock:0,pend:0,clip:0,drop:null,pops:[],items:it,bskt:{hi:[],lo:[]},cnt:{net:0,bh:0,bl:0,ch:0,cl:0,asc:0},prevHold:SET.pre,
     r:SET.pre==='p'
-      ?{x:130,y:14,a:0,vx:0,vy:0,H:0,E:0,hold:'p',hc:'r',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingXfer:false}
-      :{x:130,y:130,a:-3*Math.PI/4,vx:0,vy:0,H:0,E:0,hold:'s',hc:'y',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingXfer:false}
+      ?{x:130,y:14,a:0,vx:0,vy:0,H:0,E:0,hold:'p',hc:'r',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingRetractE:false,pendingRetractH:false,pendingXfer:false}
+      :{x:130,y:130,a:-3*Math.PI/4,vx:0,vy:0,H:0,E:0,hold:'s',hc:'y',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingRetractE:false,pendingRetractH:false,pendingXfer:false}
   };
 }
-const tip=()=>{const r=S.r,side=r.side||1,base=side>0?FWD_BASE:BACK_BASE,p=PIVOT+side*(base+r.E);return[r.x+Math.cos(r.a)*p,r.y+Math.sin(r.a)*p]};
+const tip=()=>{const r=S.r,side=r.side||1,p=side*(OUT+2+r.E);return[r.x+Math.cos(r.a)*p,r.y+Math.sin(r.a)*p]};
 const say=t=>{msgS=t;msgT=2.8};
 // Scoring: a running total. AUTO/TELEOP share the same point values (Table 10-3) and pieces are counted once, not doubled.
 const total=()=>S.score;
@@ -306,7 +316,8 @@ function pad(){
   if(!p)return o;
   const dz=v=>Math.abs(v)<.15?0:v,bv=i=>p.buttons[i]?p.buttons[i].value:0;
   o.x=dz(p.axes[0]||0);o.y=dz(p.axes[1]||0);o.rx=dz(p.axes[2]||0);o.ly=dz(p.axes[3]||0);o.ex=bv(7)-bv(6);
-  const a=bv(0)>.5,b=bv(1)>.5,y=bv(3)>.5;if(a&&!padA)act();if(b&&!padB)climb();if(y&&!padY)S.field=!S.field;padA=a;padB=b;padY=y;return o;
+  if(gpBind){for(let i=0;i<p.buttons.length;i++){if(bv(i)>.5){GP[gpBind]=i;store('itd-gp',GP);gpBind=null;gpKeys();break}}return o}
+  const a=bv(GP.act)>.5,b=bv(GP.climb)>.5,y=bv(GP.mode)>.5;if(a&&!padA)act();if(b&&!padB)climb();if(y&&!padY)S.field=!S.field;padA=a;padB=b;padY=y;return o;
 }
 addEventListener('keydown',e=>{
   if(bind){e.preventDefault();if(e.code!=='Escape'){const old=B[bind];for(const k in B)if(k!==bind&&B[k]===e.code)B[k]=old;B[bind]=e.code;store('itd-keys',B)}bind=null;keys();return}
@@ -344,18 +355,22 @@ function update(dt){
   const r=S.r,p=pad(),dn=a=>K[B[a]]?1:0;S.t+=dt;
   r.jaw+=((r.hold?.15:1)-r.jaw)*Math.min(1,dt*6);
   if(S.drop&&S.t-S.drop.t>.4)S.drop=null;
-  // Detect pickup/place edges for the automatic transfer and retraction options (manual controls always override).
+  // Detect pickup/place edges for the automatic transfer and retraction options (manual controls always override,
+  // but only once actually released -- see below. A key still held from the moment of pickup/placement no longer
+  // cancels the auto-retract before it ever gets a chance to run).
   const wasHeld=S.prevHold;
-  if(wasHeld==null&&r.hold!=null){r.side=1;r.pendingXfer=AUTO.xfer;if(AUTO.inR)r.autoRetractE=true}
-  if(wasHeld!=null&&r.hold==null){if(AUTO.outR){r.autoRetractE=true;r.autoRetractH=true}r.side=1;r.pendingXfer=false}
+  if(wasHeld==null&&r.hold!=null){r.side=1;r.pendingXfer=AUTO.xfer;if(AUTO.inR)r.pendingRetractE=true}
+  if(wasHeld!=null&&r.hold==null){if(AUTO.outR){r.pendingRetractE=true;r.pendingRetractH=true}r.side=1;r.pendingXfer=false}
   S.prevHold=r.hold;
   if(!S.pk&&S.t>=30){S.pk=1;if(pip(r.x,r.y,OBS))add(PTS.park,'','parkAuto');S.autoSnap=S.score}
   if(S.t>=158)return finish();
   // Human player: only ever produces a NEW specimen after the robot deposits a sample in the observation zone
   // (no background timer/stockpile). Once clipped, it's placed on the first open wall slot -- or queued if the
-  // wall is currently full, and delivered as soon as a slot frees up (i.e. the robot takes one).
+  // wall is currently full, and delivered as soon as a slot frees up (i.e. the robot takes one). A loose sample
+  // that ends up in the zone by any means (dropped, pushed, or swept) is picked up the same way.
+  S.items.forEach(o=>{if(o.t==='s'&&o.c!=='b'&&o.drop==null&&!o.w&&!o.hung&&pip(o.x,o.y,OBS))o.drop=S.t});
   for(let i=S.items.length-1;i>=0;i--){const o=S.items[i];if(o.drop!=null&&S.t-o.drop>1.5){S.items.splice(i,1);S.pend++}}
-  if(S.clip>0){S.clip-=dt;if(S.clip<=0)S.stock++}else if(S.pend>0){S.pend--;S.clip=3.5}
+  if(S.clip>0){S.clip-=dt;if(S.clip<=0)S.stock++}else if(S.pend>0){S.pend--;S.clip=HP.time}
   if(S.stock>0){const s=SLOTS.find(([x,y])=>!S.items.some(i=>Math.hypot(i.x-x,i.y-y)<6));if(s){S.items.push({x:s[0],y:s[1],t:'p',c:'r',a:0,w:1,born:S.t});S.stock--}}
   if(ph()===1){r.vx=r.vy=0;return}
   // Climb: the vertical slide is what hoists the chassis. It extends up to hook the rung, then
@@ -367,7 +382,14 @@ function update(dt){
     let da=-Math.PI/2-r.a;da=Math.atan2(Math.sin(da),Math.cos(da));r.a+=da*k;r.E+=(0-r.E)*k;return}
   const side=r.side||1,lv=dn('up')-dn('dn')-p.ly,ex=dn('out')-dn('in')+p.ex;
   const ok=(x,y,a,H,E)=>!armHit(x,y,a,H,E,side);
-  if(lv!==0)r.autoRetractH=false;if(ex!==0)r.autoRetractE=false;
+  // A pending auto-retract only converts to an active one once the relevant key is actually free -- so holding
+  // the same key that caused the pickup/placement doesn't instantly cancel it before it can start.
+  if(r.pendingRetractH&&lv===0){r.autoRetractH=true;r.pendingRetractH=false}
+  if(r.pendingRetractE&&ex===0){r.autoRetractE=true;r.pendingRetractE=false}
+  // Cancel only an ACTIVE auto-retract on fresh manual input -- a still-armed pending one should just keep
+  // waiting for the key to be free, since it may be the very key that caused the pickup/placement this frame.
+  if(lv!==0)r.autoRetractH=false;
+  if(ex!==0)r.autoRetractE=false;
   const nH=lv!==0?clamp(r.H+lv*ST.lift*dt,0,LIM.height):(r.autoRetractH?Math.max(0,r.H-ST.lift*dt):r.H);
   const nE=ex!==0?clamp(r.E+ex*ST.ext*dt,0,LIM.len-LIM.body):(r.autoRetractE?Math.max(0,r.E-ST.ext*dt):r.E);
   // Lowering/retracting can never create a new collision, so it always succeeds -- this is what guarantees the
@@ -384,11 +406,11 @@ function update(dt){
   r.vx+=(mx*sp-r.vx)*k;r.vy+=(my*sp-r.vy)*k;
   const na=r.a+(dn('tr')-dn('tl')+p.rx)*3*dt*(1-.3*r.H/LIM.height);
   r.a=sweep(r.a,na,v=>ok(r.x,r.y,v,r.H,r.E));
-  const tx2=r.x+r.vx*dt,ty2=r.y+r.vy*dt,[px,py]=place(tx2,ty2);
-  const moved=sweep(0,1,t=>{const[qx,qy]=place(r.x+(px-r.x)*t,r.y+(py-r.y)*t);return ok(qx,qy,r.a,r.H,r.E)},6);
-  if(moved>0){const[qx,qy]=place(r.x+(px-r.x)*moved,r.y+(py-r.y)*moved);r.x=qx;r.y=qy;if(moved<1){r.vx*=.2;r.vy*=.2}}
-  else{const[ax,ay]=place(px,r.y),[bx,by]=place(r.x,py);
-    if(ok(ax,ay,r.a,r.H,r.E)){r.x=ax;r.y=ay;r.vy=0}else if(ok(bx,by,r.a,r.H,r.E)){r.x=bx;r.y=by;r.vx=0}else r.vx=r.vy=0}
+  // Driving the chassis itself is deliberately NEVER blocked by the arm's collision state -- only place()'s
+  // simple chassis-vs-submersible/corner-pole logic applies here. Coupling translation to the arm-tip sweep
+  // used to be able to leave the drivetrain permanently unable to move if the arm was embedded in something
+  // (e.g. right after a flip); decoupling them means retracting the arm is never a *requirement* to keep driving.
+  [r.x,r.y]=place(r.x+r.vx*dt,r.y+r.vy*dt);
   // The chassis pushes loose game pieces aside instead of driving through them.
   S.items.forEach(o=>{if(o.drop!=null||o.w)return;const dx=o.x-r.x,dy=o.y-r.y,d=Math.hypot(dx,dy),min=10.5;
     if(d<min){const k2=d>.01?1/d:0;o.x=clamp(r.x+dx*k2*min,2,142);o.y=clamp(r.y+dy*k2*min,2,142)}});
@@ -455,15 +477,15 @@ function robot(){
   [[-5.5,-10.5],[5.5,-10.5],[-5.5,10.5],[5.5,10.5]].forEach(([p,q])=>part(G1,p,q,z0,7,3,4.5,[54,60,64]));
   G1.sort((m,n)=>m.d-n.d).forEach(o=>o.f());
   const th=Math.max(22,r.H+10),zh=z0+r.H,E=r.E,jaw=r.jaw??1,jgap=1.1+2.3*jaw;
-  const base=side>0?FWD_BASE:BACK_BASE,reach=base+E,tipP=PIVOT+side*reach,midP=PIVOT+side*reach/2,wristAng=a+(side<0?Math.PI:0);
+  const reach=OUT+2+E,tipP=side*reach,midP=side*(OUT+reach)/2,wristAng=a+(side<0?Math.PI:0);
   // fixed vertical slide -- never moves or mirrors
-  part(G2,-7,0,z0+4.5,3.6,11,th,[235,235,230]);
-  part(G2,-5.4,0,zh+3.6,5,8.6,5.2,[242,194,48]);
-  // wrist bracket, the pivot point itself
-  part(G2,PIVOT,0,zh+4.6,4,4.6,2.6,[242,194,48]);
-  part(G2,midP,0,zh+4.9,reach-1,3,2.2,[232,232,227],wristAng);
+  part(G2,-6,0,z0+4.5,3,11,th,[235,235,230]);
+  part(G2,-4.8,0,zh+3.6,4,8.6,5.2,[242,194,48]);
+  // wrist bracket -- sits right at the chassis edge, on whichever side matches the current orientation
+  part(G2,side*OUT,0,zh+4.6,2.8,4.6,2.6,[242,194,48]);
+  part(G2,midP,0,zh+4.9,reach-OUT-1,3,2.2,[232,232,227],wristAng);
   [-jgap,jgap].forEach(q=>part(G2,tipP,q,zh,2.6,1.2,7,[242,194,48],wristAng));
-  if(r.hold)part(G2,tipP,0,zh+.6,1.8,4.4,1.8,COL[r.hc||'y'],wristAng+Math.PI/2);
+  if(r.hold){part(G2,tipP,0,zh+.6,1.8,4.4,1.8,COL[r.hc||'y'],wristAng+Math.PI/2);if(r.hold==='p')part(G2,tipP,0,zh+2.4,1,3.2,.8,[30,30,30],wristAng+Math.PI/2)}
   G2.sort((m,n)=>m.d-n.d).forEach(o=>o.f());
 }
 function draw(){
@@ -485,8 +507,12 @@ function draw(){
   wall(0,0,0,F,12,'#2b3c42');wall(0,0,F,0,12,'#34474e');
   {const[X,Y]=P(tx,ty,0);g.strokeStyle=r.hold?'#5be3a1':'rgba(255,255,255,.75)';g.lineWidth=2;g.beginPath();g.ellipse(X,Y,15,7.5,0,0,7);g.stroke()}
   const E=[],ent=(x,y,f)=>{const[u,v]=R(x,y);E.push({d:u+v,f})};
-  S.items.forEach(o=>ent(o.x,o.y,()=>{const age=o.born!=null?S.t-o.born:9,bz=age<.35?(.35-age)*10:0,z=o.hung?(o.hung==='hi'?26:13):(o.w?3.5:0)+bz,ang=o.hung?Math.PI/2:o.a;OB(o.x,o.y,z,4.4,1.8,1.8,ang,COL[o.c]);if(o.t==='p')OB(o.x,o.y,z+1.8,1,2.8,.9,ang,[250,250,250])}));
-  [[49,57],[95,57],[49,87],[95,87]].forEach(([x,y])=>ent(x,y,()=>OB(x,y,0,2.2,2.2,32,0,[214,222,224])));
+  S.items.forEach(o=>ent(o.x,o.y,()=>{
+    if(o.hung){const top=o.hung==='hi'?26:13;OB(o.x,o.y,top-6,1.6,3.2,6,0,COL[o.c]);OB(o.x,o.y,top-1,2.2,3.8,1.6,0,[30,30,30]);return}
+    const age=o.born!=null?S.t-o.born:9,bz=age<.35?(.35-age)*10:0,z=(o.w?3.5:0)+bz;
+    OB(o.x,o.y,z,4.4,1.8,1.8,o.a,COL[o.c]);if(o.t==='p')OB(o.x,o.y,z+1.8,1,2.8,.9,o.a,[250,250,250]);
+  }));
+  [[49,57],[95,57],[49,87],[95,87]].forEach(([x,y])=>ent(x,y,()=>OB(x,y,0,2.2,2.2,37,0,[214,222,224])));
   [13,26].forEach(h=>{ent(96.7,72,()=>OB(96.7,72,h-.7,1.4,32,1.4,0,[217,68,58]));ent(47.3,72,()=>OB(47.3,72,h-.7,1.4,32,1.4,0,[61,111,208]))});
   [20,36].forEach(h=>{ent(72,88.7,()=>OB(72,88.7,h-.7,48,1.4,1.4,0,[232,238,240]));ent(72,55.3,()=>OB(72,55.3,h-.7,48,1.4,1.4,0,[232,238,240]))});
   const bucket=(cx,cy,zt,items)=>ent(cx,cy,()=>{const ring=(w,z)=>[[-w,-w],[w,-w],[w,w],[-w,w]].map(([p,q])=>{const[u,v]=R(cx+p,cy+q);return P2(u,v,z)}),T=ring(6,zt),Bm=ring(4,zt-9);
@@ -544,7 +570,7 @@ function fit(){
 }
 addEventListener('resize',fit);
 try{$('bs').textContent=+localStorage.getItem('itd-best')||0}catch(e){}
-initSetup();reset();keys();sliders();fit();
+initSetup();reset();keys();gpKeys();sliders();fit();
 show(`<h1>Into the Deep: Solo Run</h1><p>You are the red alliance, viewed from a field corner. 30 s auto, an 8 s transition where the robot is frozen, then 2:00 of teleop. Ascent counts in the last 30 s.</p>
 <ul><li><b>Limits:</b> 18 in starting cube, 42 in total horizontal reach (per R104). The rules set no real height cap, so lift freely.</li>
 <li><b>Human player:</b> drop a sample in the observation zone (red tape, right side). They take it, clip it, and hang it on the wall as a specimen.</li>
