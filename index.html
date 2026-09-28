@@ -19,7 +19,8 @@
     - Constants: PTS (point values), LIM (robot size limits), field zone polygons (OBS,
       NET, ASC), OBST (3D collision boxes for posts/bars/rungs), key bindings (ACT/DEF).
     - Isometric projection helpers (R, P, P2, OB, poly, pl): world inches -> screen pixels,
-      viewed from one of the four field corners (the `cam` variable), used for the whole
+      viewed by a camera that slowly orbits the field (camAngle) and re-centers on the robot every
+      frame (updateCam) -- the V key toggles the orbit on/off -- used for the whole
       3D-looking scene drawn on a single 2D <canvas> -- there is no WebGL/3D library here.
     - Game state lives entirely in one object, `S` (created fresh by reset()). `S.r` is the
       robot: position/heading (x,y,a), drivetrain velocity (vx,vy), lift height (H),
@@ -237,10 +238,13 @@ function initSetup(){$('pre').value=SET.pre;$('nsub').value=SET.n;$('vn').textCo
 function pip(x,y,p){let c=false;for(let i=0,j=p.length-1;i<p.length;j=i++){const[a,b]=p[i],[u,w]=p[j];if((b>y)!==(w>y)&&x<(u-a)*(y-b)/(w-b)+a)c=!c}return c}
 const inAsc=(x,y)=>{for(let i=-1;i<=1;i++)for(let j=-1;j<=1;j++)if(pip(x+i*9,y+j*9,ASC))return true;return false};
 const ph=()=>S.t<30?0:S.t<38?1:S.t<128?2:3;
-// ---- isometric projection: world inches (x,y,z) -> screen, viewer at one field corner (cam 0..3) ----
-const AS=3.2,CX=500,CY=110;
-const R=(x,y)=>{for(let i=0;i<cam;i++)[x,y]=[y,F-x];return[x,y]};
-const Rv=(x,y)=>{for(let i=0;i<(4-cam)%4;i++)[x,y]=[y,-x];return[x,y]};
+// ---- isometric projection: world inches (x,y,z) -> screen. The camera continuously orbits the field
+// (camAngle) and re-centers each frame (see updateCam()) so the robot stays roughly on-screen as it
+// drives around -- a chase-style camera instead of a single fixed corner, for a more three-dimensional feel.
+const AS=3.2;let CX=500,CY=340,camAngle=-Math.PI/4,camAuto=true;
+const R=(x,y)=>{const cx=F/2,cy=F/2,dx=x-cx,dy=y-cy,c=Math.cos(camAngle),s=Math.sin(camAngle);return[cx+dx*c-dy*s,cy+dx*s+dy*c]};
+const Rv=(x,y)=>{const c=Math.cos(-camAngle),s=Math.sin(-camAngle);return[x*c-y*s,x*s+y*c]};
+function updateCam(){const[u,v]=R(S.r.x,S.r.y);CX=500-(u-v)*AS;CY=340-(u+v)*AS*.5}
 const P2=(u,v,z)=>[CX+(u-v)*AS,CY+(u+v)*AS*.5-z*AS*.9];
 const P=(x,y,z=0)=>{const[u,v]=R(x,y);return P2(u,v,z)};
 const rgb=(c,k)=>`rgb(${Math.min(255,c[0]*k)|0},${Math.min(255,c[1]*k)|0},${Math.min(255,c[2]*k)|0})`;
@@ -325,7 +329,7 @@ addEventListener('keydown',e=>{
   if(Object.values(B).includes(e.code)&&S.run)e.preventDefault();
   if(!e.repeat){
     if(e.code===B.reset){start();return}
-    if(e.code===B.cam)cam=(cam+1)%4;
+    if(e.code===B.cam)camAuto=!camAuto;
     if(e.code===B.full)toggleFull();
     if(S.run){
       if(e.code===B.pause)S.paused=!S.paused;
@@ -490,6 +494,7 @@ function robot(){
   G2.sort((m,n)=>m.d-n.d).forEach(o=>o.f());
 }
 function draw(){
+  updateCam();
   const d=C.width/1000;g.setTransform(d,0,0,d,0,0);
   const bg=g.createLinearGradient(0,0,0,620);bg.addColorStop(0,'#0c1f26');bg.addColorStop(1,'#16343f');g.fillStyle=bg;g.fillRect(0,0,1000,620);
   const lab=(t,x,y)=>{const[X,Y]=P(x,y,0);g.fillStyle='rgba(15,30,35,.6)';g.font='600 15px '+FN;g.textAlign='center';g.fillText(t,X,Y)};
@@ -557,7 +562,7 @@ function hud(dt){
   $('hint').textContent=h;$('fsHint').textContent=kn(B.full)+' full screen \u00b7 '+kn(B.pause)+' pause \u00b7 '+kn(B.flip)+' flip arm \u00b7 '+kn(B.reset)+' reset';
 }
 let last=performance.now();
-function loop(now){const dt=Math.min(.05,(now-last)/1000);last=now;if(S.run&&!S.paused)update(dt);hud(S.run?dt:0);draw();requestAnimationFrame(loop)}
+function loop(now){const dt=Math.min(.05,(now-last)/1000);last=now;if(camAuto)camAngle+=dt*(2*Math.PI/50);if(S.run&&!S.paused)update(dt);hud(S.run?dt:0);draw();requestAnimationFrame(loop)}
 function fit(){
   const el=document.getElementById('fsRoot'),isFS=!!(el&&el.classList.contains('fsOn')),d=Math.min(devicePixelRatio||1,2);
   let w;
