@@ -68,7 +68,7 @@ const ACT=[['fwd','Drive forward'],['back','Drive back'],['left','Strafe left'],
 const DEF={fwd:'KeyW',back:'KeyS',left:'KeyA',right:'KeyD',tl:'KeyQ',tr:'KeyE',up:'ArrowUp',dn:'ArrowDown',out:'ArrowRight',in:'ArrowLeft',act:'Space',climb:'KeyF',cam:'KeyV',mode:'KeyC',flip:'KeyX',pause:'KeyP',full:'KeyG',reset:'KeyR'};
 const SL=[['drive','Drive speed',20,110],['lift','Lift speed',10,90],['ext','Extension speed',10,90]];
 const HPL=[['time','Human player clip time',1,8]];
-let B={...DEF},ST={drive:80,lift:48,ext:48},bind=null,S,K={},padA=0,padB=0,padY=0,padOff=false,msgT=0,msgS='',cam=1,SET={pre:'p',n:18},AUTO={xfer:true,inR:true,outR:true},HP={time:3.5},GP={act:0,climb:1,mode:3,flip:2,cam:5,pause:9,reset:8},gpBind=null,TEAM='17012';
+let B={...DEF},ST={drive:80,lift:48,ext:48},bind=null,S,K={},padA=0,padB=0,padY=0,padOff=false,msgT=0,msgS='',cam=1,SET={pre:'p',n:18},AUTO={xfer:true,inR:true,outR:true},HP={time:3.5},GP={act:0,climb:1,mode:3,flip:2,cam:5,pause:9,reset:8},gpBind=null,TEAM='00000';
 try{Object.assign(B,JSON.parse(localStorage.getItem('itd-keys')||'{}'));Object.assign(ST,JSON.parse(localStorage.getItem('itd-set')||'{}'));Object.assign(SET,JSON.parse(localStorage.getItem('itd-setup')||'{}'));Object.assign(AUTO,JSON.parse(localStorage.getItem('itd-auto')||'{}'));Object.assign(HP,JSON.parse(localStorage.getItem('itd-hp')||'{}'));Object.assign(GP,JSON.parse(localStorage.getItem('itd-gp')||'{}'));TEAM=localStorage.getItem('itd-team')??TEAM}catch(e){}
 const store=(k,o)=>{try{localStorage.setItem(k,JSON.stringify(o))}catch(e){}};
 const kn=c=>({Space:'Space',ArrowUp:'↑',ArrowDown:'↓',ArrowLeft:'←',ArrowRight:'→'}[c]||c.replace(/^(Key|Digit)/,''));
@@ -224,7 +224,9 @@ r.x+=(clamp(r.x,54,90)-r.x)*k;
 let da=-Math.PI/2-r.a;da=Math.atan2(Math.sin(da),Math.cos(da));r.a+=da*k;r.E+=(0-r.E)*k;return}
 if(r.pendingRetractH){r.autoRetractH=true;r.pendingRetractH=false}
 if(r.pendingRetractE){r.autoRetractE=true;r.pendingRetractE=false}
-const side=r.side||1,lv=r.autoRetractH?0:dn('up')-dn('dn')-p.ly,ex=r.autoRetractE?0:dn('out')-dn('in')+p.ex;
+const side=r.side||1,lv=r.autoRetractH?0:dn('up')-dn('dn')-p.ly,xr=dn('out')-dn('in')+p.ex;
+if(xr<=.15)r.exLock=0;else if(r.autoRetractE)r.exLock=1;
+const ex=r.autoRetractE||r.exLock?0:xr;
 const ok=(x,y,a,H,E)=>!armHit(x,y,a,H,E,side);
 const nH=lv!==0?clamp(r.H+lv*ST.lift*dt,0,LIM.height):(r.autoRetractH?Math.max(0,r.H-ST.lift*dt):r.H);
 const nE=ex!==0?clamp(r.E+ex*ST.ext*dt,0,LIM.len-LIM.body):(r.autoRetractE?Math.max(0,r.E-ST.ext*dt):r.E);
@@ -348,13 +350,13 @@ const shirt=M(0xb32a22,0,.8);box(10,22,6,M(0x2a2f36,0,.9),0,11,0,hp);box(14,24,8
 const hd=new THREE.Mesh(new THREE.SphereGeometry(4.8,20,14),M(0xf0d2b4,0,.8));hd.position.set(0,50,0);hd.castShadow=true;hp.add(hd);
 const tool=box(5,1,1.2,M(0xd9443a,0,.5),4,38,9,hp);
 const alu=M(0xd5dbde,.85,.32),yel=M(0xf2c230,.35,.4),blk=M(0x1a1d20,.2,.7),rub=M(0x121416,0,.95),rg=new THREE.Group();sc.add(rg);
-const pt={};['plate','brk','fL','fR','clip','pl1','pl2','xp'].forEach(n=>pt[n]=box(1,1,1,n==='plate'?alu:n==='clip'?blk:yel,0,0,0,rg));
+const pt={};['plate','brk','fL','fR','clip','pl1','pl2','xp','pdL','pdR'].forEach(n=>pt[n]=box(1,1,1,n==='plate'?alu:/^(clip|pd)/.test(n)?blk:yel,0,0,0,rg));
 const held=box(1,1,1,mat('y'),0,0,0,rg);
-box(5,2.6,3,blk,3.5,5.8,-4,rg);const hb=document.createElement('canvas');hb.width=450;hb.height=340;const h2=hb.getContext('2d'),poly=(c,p)=>{h2.fillStyle=c;h2.beginPath();p.forEach(([x,y],i)=>i?h2.lineTo(x,y):h2.moveTo(x,y));h2.fill()};
+box(5,2.6,3,blk,5.2,5.8,-4,rg);const hb=document.createElement('canvas');hb.width=450;hb.height=340;const h2=hb.getContext('2d'),poly=(c,p)=>{h2.fillStyle=c;h2.beginPath();p.forEach(([x,y],i)=>i?h2.lineTo(x,y):h2.moveTo(x,y));h2.fill()};
 poly('#1c1d20',[[0,0],[450,0],[450,340],[0,340]]);poly('#f26a1b',[[250,0],[450,0],[450,150],[330,150]]);poly('#fff',[[0,150],[450,150],[450,250],[0,250]]);poly('#f26a1b',[[0,250],[170,250],[230,340],[0,340]]);
 h2.fillStyle='#fff';h2.font='italic 700 54px '+FN;h2.fillText('REV',22,80);h2.font='600 15px '+FN;h2.fillText('ROBOTICS',24,100);h2.fillStyle='#1c1d20';h2.textAlign='center';h2.font='700 50px '+FN;h2.fillText('CONTROL HUB',225,215);
 const hubTop=new THREE.MeshStandardMaterial({map:new THREE.CanvasTexture(hb),roughness:.5}),hbk=M(0x1c1d20,.2,.6);
-box(4.9,.3,3.8,M(0x2a2c30,.3,.6),0,4.65,6.4,rg);box(4.5,.9,3.4,[hbk,hbk,hubTop,hbk,hbk,hbk],0,5.25,6.4,rg);
+box(4.5,.9,3.4,[hbk,hbk,hubTop,hbk,hbk,hbk],1.5,4.95,3.9,rg).rotation.y=-Math.PI/2;
 const WH=[],rg2=new THREE.SphereGeometry(1,10,8),ym=M(0xf2c230,.2,.5),YA=new THREE.Vector3(0,1,0);
 [[-5.5,-10.5],[5.5,-10.5],[-5.5,10.5],[5.5,10.5]].forEach(([p,q])=>{const w=new THREE.Group(),hd=Math.sign(p*q);w.position.set(p,2.25,q);rg.add(w);WH.push({w,p,q,hd});
 const cy=(r,l,z,m)=>{const c=new THREE.Mesh(new THREE.CylinderGeometry(r,r,l,16),m);c.rotation.x=Math.PI/2;c.position.z=z;w.add(c)};
@@ -362,13 +364,29 @@ cy(.9,3.2,0,blk);cy(1.75,.4,-1.3,ym);cy(1.75,.4,1.3,ym);
 for(let i=0;i<12;i++){const a=i/12*Math.PI*2,m=new THREE.Mesh(rg2,rub);m.scale.set(.6,1.5,.6);m.position.set(Math.cos(a)*1.7,Math.sin(a)*1.7,0);m.quaternion.setFromUnitVectors(YA,new THREE.Vector3(-Math.sin(a),Math.cos(a),hd).normalize());m.castShadow=true;w.add(m)}});
 const V=(x,y,z)=>new THREE.Vector3(x,y,z),ori=(g,ax,az)=>g.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(ax,az.clone().cross(ax),az));
 const hubM=M(0x8c969b,.7,.4),mtrM=M(0xf2c230,.3,.5);
+const mot=(p,ax,x,y,z,s,h)=>[[.8,2,h+1,mtrM],[.7,.8,h+2.4,blk]].forEach(([r,l,d,m])=>{const c=new THREE.Mesh(new THREE.CylinderGeometry(r,r,l,16),m);ax==='x'?c.rotation.z=Math.PI/2:c.rotation.x=Math.PI/2;c.position.set(x+(ax==='x'?s*d:0),y,z+(ax==='z'?s*d:0));c.castShadow=true;p.add(c)});
 const slide=()=>{const g=new THREE.Group(),st=[];rg.add(g);
-for(let i=0;i<4;i++){const z=(i-1.5)*.6;st.push([box(1,2,.5,alu,0,0,z,g),box(1,.25,.64,rub,0,.6,z,g)])}
-box(2,2,2,hubM,-1,0,0,g);
-[[.8,2,2,mtrM],[.7,.8,3.4,blk]].forEach(([r,l,z,m])=>{const c=new THREE.Mesh(new THREE.CylinderGeometry(r,r,l,16),m);c.rotation.x=Math.PI/2;c.position.set(-1,0,z);c.castShadow=true;g.add(c)});
-g.set=(L,o)=>st.forEach(([a,b],i)=>{const x=i*o+L/2;a.scale.x=L;a.position.x=x;b.scale.x=L-.8;b.position.x=x});return g};
+for(let i=0;i<4;i++){const z=(i-1.5)*.6;st.push([box(1,2,.5,alu,0,0,z,g),box(1,.25,.64,rub,0,.6,z,g),box(.5,2.4,.5,hubM,0,0,z,g)])}
+box(2,2,2,hubM,-1,0,0,g);mot(g,'z',-1,0,0,1,1);
+g.set=(L,o)=>st.forEach(([a,b,c],i)=>{const x=i*o+L/2;a.scale.x=L;a.position.x=x;b.scale.x=L-.8;b.position.x=x;c.position.x=x+L/2-.25});return g};
 const TW=[slide(),slide()],HS=slide();
 ori(TW[0],V(0,1,0),V(0,0,-1));ori(TW[1],V(0,1,0),V(0,0,1));TW[0].position.set(-8,6.5,5.4);TW[1].position.set(-8,6.5,-5.4);
+const WG=new THREE.CylinderGeometry(1,1,1,6),WM=[M(0xd9261c,0,.5),M(0x15171a,0,.6)];
+const wire=n=>{const ms=[...Array(2*n)].map((_,i)=>{const m=new THREE.Mesh(WG,WM[i&1]);rg.add(m);return m});
+return P=>{for(let i=0;i<n;i++){const a=P[i],b=P[i+1],d=[b[0]-a[0],b[1]-a[1],b[2]-a[2]],l=Math.hypot(...d)||.001;
+for(let j=0;j<2;j++){const m=ms[2*i+j],e=j?.07:-.07;m.scale.set(.1,l,.1);m.position.set((a[0]+b[0])/2+e,(a[1]+b[1])/2+e,(a[2]+b[2])/2+e);m.quaternion.setFromUnitVectors(YA,new THREE.Vector3(d[0]/l,d[1]/l,d[2]/l))}}}};
+[1,-1].forEach(s=>{box(18,.3,3.2,alu,0,1.65,s*7.4,rg);box(18,3,.3,alu,0,3,s*8.85,rg);box(18,3,.3,alu,0,3,s*5.95,rg);
+[1,-1].forEach(a=>{box(1.6,1.8,3,hubM,a*5.5,2.6,s*7.4,rg);mot(rg,'x',a*5.5,2.9,s*7.4,-a,.8);
+wire(3)([[a*1.9,2.9,s*7.4],[a*1.9,4.85,s*7.4],s>0?[a>0?2.5:.5,4.85,6.6]:[a>0?2.3:1,4.85,1],s>0?[a>0?2.5:.5,4.95,6.2]:[a>0?2.3:1,4.95,1.6]])})});
+[1,-1].forEach(s=>wire(3)([[-8,5.5,s*1.6],[-8,4.85,s*1.6],s>0?[-1,4.85,2.4]:[.2,4.85,1],s>0?[-.3,4.95,2.4]:[.2,4.95,1.6]]));
+const hw=wire(2),wr=new THREE.Group();rg.add(wr);
+const cv=(w,h,f)=>{const c=document.createElement('canvas');c.width=w;c.height=h;f(c.getContext('2d'));return new THREE.MeshStandardMaterial({map:new THREE.CanvasTexture(c),roughness:.5,metalness:.3})};
+const cdk=M(0x16181b,.3,.5),cm=cv(256,96,q=>{q.fillStyle='#16181b';q.fillRect(0,0,256,96);q.fillStyle='#6b7075';for(let i=0;i<8;i++)for(let j=0;j<3;j++){q.beginPath();q.arc(20+i*31,16+j*32,6,0,7);q.fill()}});
+box(8,.25,3.4,[cdk,cdk,cm,cm,cdk,cdk],3,1.2,0,HS);
+const sm2=cv(256,128,q=>{q.fillStyle='#1b1d21';q.fillRect(0,0,256,128);q.fillStyle='#2c3036';q.fillRect(16,16,224,96);q.fillStyle='#fff';q.textAlign='center';q.textBaseline='middle';q.font='700 36px '+FN;q.fillText('AXON MAX',128,64)});
+box(3.6,1.5,2.4,[cdk,cdk,sm2,cdk,cdk,cdk],-.8,3.35,0,wr).rotation.y=-Math.PI/2;
+const bolt=new THREE.Mesh(new THREE.CylinderGeometry(.5,.5,3.4,12),hubM);bolt.rotation.x=Math.PI/2;bolt.position.set(1,1.3,0);wr.add(bolt);
+const cab=new THREE.Mesh(WG,rub);cab.rotation.z=Math.PI/2;rg.add(cab);const zt=[1,2,3].map(()=>box(.4,.9,.9,M(0xf2f2f2,0,.6),0,0,0,rg));
 const tc2=document.createElement('canvas');tc2.width=256;tc2.height=128;const pg=tc2.getContext('2d'),ptx=new THREE.CanvasTexture(tc2),pcol='#'+hex(COL[ALLI]).toString(16).padStart(6,'0'),pedge=M(hex(COL[ALLI]),0,.6),pface=new THREE.MeshStandardMaterial({map:ptx,roughness:.6});
 let pk=null,pr=null;
 [1,-1].forEach(s=>box(5.8,2.9,.3,[pedge,pedge,pedge,pedge,pface,pface],0,3,s*9.15,rg));
@@ -385,9 +403,13 @@ frame:dt=>{
 const r=S.r,side=r.side||1,zh=r.H,th=Math.max(22,zh+10),reach=OUT+2+r.E,tipP=side*reach,jg=1.1+2.3*(r.jaw??1),[tx,ty]=tip();
 rg.position.set(r.x,r.rise,r.y);rg.rotation.y=-r.a;
 if(pr&&Math.abs(r.x-pr[0])+Math.abs(r.y-pr[1])<20){const dx=r.x-pr[0],dy=r.y-pr[1],da=Math.atan2(Math.sin(r.a-pr[2]),Math.cos(r.a-pr[2])),ca=Math.cos(r.a),sa=Math.sin(r.a),u=dx*ca+dy*sa,v=dy*ca-dx*sa;WH.forEach(o=>o.w.rotation.z-=(u-o.q*da+o.hd*(v+o.p*da))/2.3)}pr=[r.x,r.y,r.a];
-if(pk!==TEAM){pk=TEAM;pg.fillStyle=pcol;pg.fillRect(0,0,256,128);pg.fillStyle='#fff';pg.textAlign='center';pg.textBaseline='middle';pg.font='700 100px '+FN;const t=TEAM||'----',wd=pg.measureText(t).width;if(wd>236)pg.font='700 '+Math.floor(100*236/wd)+'px '+FN;pg.fillText(t,128,68);ptx.needsUpdate=true}
-put(pt.plate,0,0,1.5,18,18,3);TW.forEach(t=>t.set(20,(th-22)/3));put(pt.pl1,-5.5,6.85,zh+3.6,6.4,.6,5.2);put(pt.pl2,-5.5,-6.85,zh+3.6,6.4,.6,5.2);put(pt.xp,-2.6,0,zh+3.6,.6,14.3,5.2);
-HS.position.set(-side*3.5,zh+6,0);ori(HS,V(side,0,0),V(0,0,1));HS.set(13.5,r.E/3);put(pt.brk,side*(reach-1.9),0,zh+4.6,2.8,4.6,2.6);put(pt.fL,tipP,-jg,zh,2.6,1.2,7);put(pt.fR,tipP,jg,zh,2.6,1.2,7);
+if(pk!==TEAM){pk=TEAM;pg.fillStyle=pcol;pg.fillRect(0,0,256,128);pg.fillStyle='#fff';pg.textAlign='center';pg.textBaseline='middle';pg.font='700 100px '+FN;const t=TEAM||'00000',wd=pg.measureText(t).width;if(wd>236)pg.font='700 '+Math.floor(100*236/wd)+'px '+FN;pg.fillText(t,128,68);ptx.needsUpdate=true}
+put(pt.plate,0,0,3.9,18,11.6,.6);TW.forEach(t=>t.set(20,(th-22)/3));put(pt.pl1,-5.5,6.85,zh+3.6,6.4,.6,5.2);put(pt.pl2,-5.5,-6.85,zh+3.6,6.4,.6,5.2);put(pt.xp,-2.6,0,zh+3.6,.6,14.3,5.2);
+HS.position.set(-side*3.5,zh+6,0);ori(HS,V(side,0,0),V(0,0,1));HS.set(13.5,r.E/3);put(pt.brk,side*(reach-1.9),0,zh+4.6,2.8,4.6,2.6);
+wr.position.set(side*(reach-1.9),zh+4.6,0);wr.rotation.y=side<0?Math.PI:0;
+const cx0=-side*2.6,cx1=side*(r.E+7.6);cab.scale.set(.3,Math.abs(cx1-cx0),.3);cab.position.set((cx0+cx1)/2,zh+7.4,-1.45);zt.forEach((z,i)=>z.position.set(cx0+(cx1-cx0)*(i+1)/4,zh+7.4,-1.45));
+put(pt.pdL,tipP,-jg+.78,zh+.7,2.2,.35,5.4);put(pt.pdR,tipP,jg-.78,zh+.7,2.2,.35,5.4);
+hw([[-side*4.5,zh+6,3.85],[(-side*4.5+2.8)/2,Math.max(5.9,(zh+11.45)/2-2),4.8],[2.8,5.45,5.7]]);put(pt.fL,tipP,-jg,zh,2.6,1.2,7);put(pt.fR,tipP,jg,zh,2.6,1.2,7);
 held.visible=!!r.hold;pt.clip.visible=r.hold==='p';
 if(r.hold){held.material=mat(r.hc||'y');put(held,tipP,0,zh+.6,4.4,1.8,1.8);put(pt.clip,tipP,0,zh+2.4,3.2,1,.8)}
 ring.position.set(tx,.12,ty);ring.material.color.setHex(r.hold?0x5be3a1:0xffffff);
@@ -407,7 +429,7 @@ if(cam.fov!==fv){cam.fov=fv;cam.updateProjectionMatrix()}
 camP.lerp(new THREE.Vector3(clamp(r.x+fx*off-fz*sh,-30,174),hgt+r.rise+zh*(fpv?1:.4),clamp(r.y+fz*off+fx*sh,-30,174)),kk);
 camT.lerp(new THREE.Vector3(r.x+fx*ah,(fpv?zh*.5+2:6+zh*.6)+r.rise,r.y+fz*ah),kk);
 cam.position.copy(camP);cam.lookAt(camT);
-rg.children.forEach(c=>c.visible=!fpv||c===pt.fL||c===pt.fR||c===held||c===pt.clip);held.visible=!!r.hold;pt.clip.visible=r.hold==='p';
+rg.children.forEach(c=>c.visible=!fpv||c===pt.fL||c===pt.fR||c===held||c===pt.clip||c===pt.pdL||c===pt.pdR);held.visible=!!r.hold;pt.clip.visible=r.hold==='p';
 rd.render(sc,cam)}};
 }catch(e){T3=null}
 }
