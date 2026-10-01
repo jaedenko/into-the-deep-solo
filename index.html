@@ -1,590 +1,476 @@
 <!DOCTYPE html>
-<!--
-  INTO THE DEEP: SOLO RUN
-  =======================
-  WHAT THIS IS: A single-player browser simulation of one match of FIRST Tech Challenge's
-  2024-25 game, "Into the Deep" (presented by RTX). It is not an official FIRST product;
-  it's a fan-made practice/fun tool built for one specific person's own robot design, based
-  on the official Game Manual Part 2 (a copy was used to check scoring values, field
-  dimensions, and robot size limits) plus reference photos/video of that person's real robot.
-
-  GOAL OF THE GAME (for the player): score as many points as possible in one match --
-  30s autonomous, an 8s transition, 2:00 teleop, with the ascent (climbing) opportunity
-  in the last 30s -- by cycling samples/specimens between the central "submersible" and
-  the baskets/chamber, then climbing the rungs before the buzzer.
-
-  HOW TO READ THIS FILE: it's intentionally a single self-contained HTML file (no build
-  step, no external JS files) so it can be opened directly or dropped into a static host.
-  Everything lives in one <script> tag at the bottom. Key building blocks, top to bottom:
-    - Constants: PTS (point values), LIM (robot size limits), field zone polygons (OBS,
-      NET, ASC), OBST (3D collision boxes for posts/bars/rungs), key bindings (ACT/DEF).
-    - Isometric projection helpers (R, P, P2, OB, poly, pl): world inches -> screen pixels,
-      viewed by a camera that slowly orbits the field (camAngle) and re-centers on the robot every
-      frame (updateCam) -- the V key toggles the orbit on/off -- used for the whole
-      3D-looking scene drawn on a single 2D <canvas> -- there is no WebGL/3D library here.
-    - Game state lives entirely in one object, `S` (created fresh by reset()). `S.r` is the
-      robot: position/heading (x,y,a), drivetrain velocity (vx,vy), lift height (H),
-      horizontal slide extension (E), which way the claw is currently pointed (side: 1 =
-      forward for intake, -1 = flipped 180 degrees around a FIXED pivot point on the
-      vertical slide, for scoring -- the slide itself never moves or mirrors, only the
-      claw + its short reach do, matching the real robot's wrist-flip mechanism).
-    - update(dt) runs the whole simulation one frame at a time: input -> collision-checked
-      lift/extension/rotation/translation -> game-piece pickup/pushing/sweeping -> the
-      automated human-player specimen pipeline -> climb physics -> auto phase transitions.
-    - act()/climb() are the two discrete player actions (score-or-drop, and hang), bound to
-      a configurable key (see B/DEF) or a gamepad button.
-    - armHit(...) is the arm/claw collision test against OBST; "soft" obstacles (bars,
-      rungs) can be hooked by the claw tip but not passed through by the rigid arm body.
-      Extending/raising is collision-checked; retracting/lowering is always allowed (it
-      can't create a new collision), which is what prevents the arm from ever getting
-      permanently stuck.
-    - robot()/draw()/hpDraw() render the scene each frame; hud() updates the DOM overlays
-      (scoreboard, status line, hint text). All of it is redrawn every animation frame in
-      loop() -- there's no separate "dirty rectangle" optimization.
-    - Everything under "Setup"/"Controls"/"Speeds" in the side panel, plus best score, is
-      persisted to localStorage so it survives a page reload.
-
-  IF YOU (an AI or a developer) ARE ASKED TO MODIFY THIS: point values, field dimensions,
-  and scoring rules should match the official Game Manual Part 2 unless the person
-  explicitly asks for a deliberate "house rule" deviation (a few exist and are commented
-  where they occur -- see below). The isometric renderer and the collision system are
-  hand-rolled, not a library, so changes to robot geometry should go through the
-  `part()`/`OB()` helpers in robot()/armHit()/tip(), and all three should stay in sync
-  with each other (they all encode the same physical arm geometry).
-
-  MAINTENANCE NOTE: this header is kept up to date with every round of changes, specifically
-  so the next person or AI working on this file has the full context without re-deriving it.
-  Please keep extending it (not replacing it) when you make further changes.
-
-  CURRENT ARM MODEL (as of this revision): the vertical slide (the "-7" and "-5.4" parts in
-  robot()/PIVOT-adjacent code) never moves or rotates -- it's the fixed lift column. Only the
-  claw + its short reach pivot around a fixed point on that column, PIVOT inches from chassis
-  center. FWD_BASE (forward/intake reach) and BACK_BASE (flipped/scoring reach) are
-  deliberately DIFFERENT lengths: BACK_BASE is bigger specifically so the flipped claw clears
-  the chassis and the fixed slide entirely and ends up outside the robot's footprint, matching
-  the real robot's wrist-flip (it doesn't fold back into itself). If you change either base,
-  sanity-check that side=-1 at E=0 still lands well clear of the chassis half-width (9in) and
-  the slide's own rendered length.
-
-  GAME RULES ENFORCED HERE THAT ARE HOUSE RULES, NOT FROM THE OFFICIAL MANUAL: dropping a
-  specimen in a basket scores like a sample there (8/4 pts) -- the real manual is
-  samples-only for baskets. This was an explicit ask, kept and commented at the point it's
-  scored (see act()).
-
-  ITEM STATE FLAGS on entries in S.items, since there's no formal item "type" system:
-    o.w      -- sitting in a wall queue slot, not yet delivered by intent (grabbable)
-    o.hung   -- scored on a chamber bar (hi/lo); can be SLID along the bar but never re-grabbed
-    o.drop   -- just dropped in the observation zone, awaiting human-player pickup/clipping
-    o.born   -- spawn timestamp, used only for the small pop-in bounce animation
-  A loose item with none of these flags is just sitting free on the floor (grab or sweep it).
--->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Into the Deep: Solo Run</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700&display=swap">
-<style>
-:root{--bg:#eaf1f0;--ink:#0d2b33;--mute:#4d6a70;--panel:#fff;--line:#bccfce;--accent:#0f7c8a;
-box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#071a20;--ink:#e3f1ef;--mute:#8fb0b3;--panel:#0d2a33;--line:#1c4652;--accent:#3cc4d0}}
-:root[data-theme="dark"]{--bg:#071a20;--ink:#e3f1ef;--mute:#8fb0b3;--panel:#0d2a33;--line:#1c4652;--accent:#3cc4d0}
-html{scroll-padding-top:env(safe-area-inset-top,0px)}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:'Barlow Condensed','Arial Narrow',sans-serif;font-weight:500;font-size:18px}
-.wrap{max-width:1180px;margin:0 auto;padding:10px 12px}
-.sb{display:grid;grid-template-columns:1fr 150px 1fr;min-height:78px;border-radius:6px;overflow:hidden;color:#fff;margin-bottom:10px;font-variant-numeric:tabular-nums}
-.sb>div{display:flex;align-items:center;gap:8px;padding:6px 12px}
-.sb .b{background:#0f5fae}.sb .r{background:#d5232a;justify-content:flex-end}
-.sb .m{background:#fff;color:#111;flex-direction:column;justify-content:center;gap:0}
-#tm{font-size:46px;font-weight:700;line-height:1}#ph{font-size:17px;font-weight:700;color:#0f5fae;text-transform:uppercase}
-.sn{font-size:44px;font-weight:700;line-height:1;min-width:64px;text-align:center}
-.stat{background:rgba(255,255,255,.93);color:#111;border-radius:3px;min-width:44px;text-align:center;line-height:1.05;padding:2px 5px}
-.stat small{display:block;font-size:11px;color:#555;text-transform:uppercase}.stat b{display:block;font-size:19px}
-.lbl{font-size:16px;opacity:.85;text-transform:uppercase}
-@media(max-width:640px){.sb{grid-template-columns:1fr 100px 1fr}.stat{min-width:34px;padding:1px 3px}.sn{font-size:32px;min-width:44px}#tm{font-size:32px}}
-.main{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:14px;align-items:start}
-#fsRoot{display:flex;flex-direction:column;min-width:0}
-#fsRoot.fsOn{position:fixed;inset:0;z-index:9999;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:14px;gap:10px;overflow:hidden;width:100vw;height:100vh}
-#fsRoot.fsOn .sb{order:2;width:100%;max-width:900px;margin:0;flex:0 0 auto}
-#fsRoot.fsOn .stage{width:auto;flex:0 0 auto;margin:0 auto}
-#fsRoot.fsOn .st,#fsRoot.fsOn #hint,#fsRoot.fsOn .pmsg{display:none}
-.pmsg{position:absolute;left:8px;bottom:8px;font-size:13px;color:var(--mute)}
-@media(max-width:900px){.main{grid-template-columns:1fr}}
-.stage{position:relative;width:100%}
-canvas{display:block;width:100%;aspect-ratio:1000/620;border-radius:6px}
-.st{display:flex;flex-wrap:wrap;gap:2px 18px;color:var(--mute);font-size:17px;margin-top:6px}
-.st b{color:var(--ink);font-variant-numeric:tabular-nums}.st .bad b{color:#d9443a}
-#hint{margin:4px 0 0;min-height:1.4em}
-.side{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:10px}
-.side h2{margin:0 0 4px;font-size:19px}
-.side p{margin:6px 0 0;color:var(--mute);font-size:15px;line-height:1.25}
-.kr{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:1px 0;font-size:16px}
-select{font:inherit;font-size:15px;background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:4px}
-input[type=range]{width:100%;accent-color:var(--accent);margin:0 0 4px}
-input[type=checkbox]{accent-color:var(--accent);width:17px;height:17px}
-.ov{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(5,20,26,.86);border-radius:6px;padding:12px}
-.ov[hidden]{display:none}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px 18px;max-width:480px;width:100%;max-height:100%;overflow:auto}
-.card h1{margin:0 0 6px;font-size:28px;line-height:1.05}
-.card p,.card li{margin:4px 0;color:var(--mute);line-height:1.25}.card ul{padding-left:18px;margin:6px 0}.card b{color:var(--ink)}
-.res{background:#c9262c;color:#fff;text-align:center;border-color:#c9262c}
-.res .rh{font-size:20px;opacity:.9}.res .wh{background:#ffe600;color:#111;font-weight:700;border-radius:3px;margin:6px 0 2px;padding:1px 0}
-.rs{font-size:84px;font-weight:700;line-height:1}
-.res table{width:100%;border-collapse:collapse;margin:8px 0;color:#111}
-.res td{background:#fff;padding:4px 10px;font-size:20px;font-weight:700}.res tr:nth-child(even) td{background:#e2e2e2}.res td+td{text-align:right}
-@media (prefers-reduced-motion:no-preference){.rs{animation:fl .45s 7}}
-@keyframes fl{50%{opacity:.1}}
-button{font:inherit;font-weight:700;font-size:20px;background:var(--accent);color:#04181d;border:0;border-radius:6px;padding:8px 18px;cursor:pointer;margin-top:8px}
-.kr button,#rk{font-size:15px;padding:1px 10px;margin:0;min-width:66px;background:transparent;color:var(--ink);border:1px solid var(--line)}
-#rk{margin-top:6px}.kr button.on{background:var(--accent);color:#04181d;border-color:var(--accent)}
-button:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
-</style>
+<style>:root{--bg:#eaf1f0;--ink:#0d2b33;--mute:#4d6a70;--panel:#fff;--line:#bccfce;--accent:#0f7c8a;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#071a20;--ink:#e3f1ef;--mute:#8fb0b3;--panel:#0d2a33;--line:#1c4652;--accent:#3cc4d0}}:root[data-theme="dark"]{--bg:#071a20;--ink:#e3f1ef;--mute:#8fb0b3;--panel:#0d2a33;--line:#1c4652;--accent:#3cc4d0}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;background:var(--bg);color:var(--ink);font-family:'Barlow Condensed','Arial Narrow',sans-serif;font-weight:500;font-size:18px}.wrap{max-width:1180px;margin:0 auto;padding:10px 12px}.sb{display:grid;grid-template-columns:1fr 150px 1fr;min-height:78px;border-radius:6px;overflow:hidden;color:#fff;margin-bottom:10px;font-variant-numeric:tabular-nums}.sb>div{display:flex;align-items:center;gap:8px;padding:6px 12px}.sb .b{background:#0f5fae}.sb .r{background:#d5232a;justify-content:flex-end}.sb .m{background:#fff;color:#111;flex-direction:column;justify-content:center;gap:0}#tm{font-size:46px;font-weight:700;line-height:1}#ph{font-size:17px;font-weight:700;color:#0f5fae;text-transform:uppercase}.sn{font-size:44px;font-weight:700;line-height:1;min-width:64px;text-align:center}.stat{background:rgba(255,255,255,.93);color:#111;border-radius:3px;min-width:44px;text-align:center;line-height:1.05;padding:2px 5px}.stat small{display:block;font-size:11px;color:#555;text-transform:uppercase}.stat b{display:block;font-size:19px}.lbl{font-size:16px;opacity:.85;text-transform:uppercase}@media(max-width:640px){.sb{grid-template-columns:1fr 100px 1fr}.stat{min-width:34px;padding:1px 3px}.sn{font-size:32px;min-width:44px}#tm{font-size:32px}}.main{display:block}#fsRoot{display:flex;flex-direction:column;min-width:0}#fsRoot.fsOn{position:fixed;inset:0;z-index:9999;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:14px;gap:10px;overflow:hidden;width:100vw;height:100vh}#fsRoot.fsOn .sb{order:2;width:100%;max-width:900px;margin:0;flex:0 0 auto}#fsRoot.fsOn .stage{width:auto;flex:0 0 auto;margin:0 auto}#fsRoot.fsOn .st,#fsRoot.fsOn #hint,#fsRoot.fsOn .pmsg{display:none}.pmsg{position:absolute;left:8px;bottom:8px;font-size:13px;color:var(--mute)}@media(max-width:900px){.main{grid-template-columns:1fr}}.stage{position:relative;width:100%}canvas{display:block;width:100%;aspect-ratio:1000/620;border-radius:6px}.st{display:flex;flex-wrap:wrap;gap:2px 18px;color:var(--mute);font-size:17px;margin-top:6px}.st b{color:var(--ink);font-variant-numeric:tabular-nums}.st .bad b{color:#d9443a}#hint{margin:4px 0 0;min-height:1.4em}.side{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:10px}.side h2{margin:0 0 4px;font-size:19px}.side p{margin:6px 0 0;color:var(--mute);font-size:15px;line-height:1.25}.kr{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:1px 0;font-size:16px}select{font:inherit;font-size:15px;background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:4px}input[type=range]{width:100%;accent-color:var(--accent);margin:0 0 4px}input[type=checkbox]{accent-color:var(--accent);width:17px;height:17px}.ov{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(5,20,26,.86);border-radius:6px;padding:12px}.ov[hidden]{display:none}.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px 18px;max-width:480px;width:100%;max-height:100%;overflow:auto}.card h1{margin:0 0 6px;font-size:28px;line-height:1.05}.card p,.card li{margin:4px 0;color:var(--mute);line-height:1.25}.card ul{padding-left:18px;margin:6px 0}.card b{color:var(--ink)}.res{background:#c9262c;color:#fff;text-align:center;border-color:#c9262c}.res .rh{font-size:20px;opacity:.9}.res .wh{background:#ffe600;color:#111;font-weight:700;border-radius:3px;margin:6px 0 2px;padding:1px 0}.rs{font-size:84px;font-weight:700;line-height:1}.res table{width:100%;border-collapse:collapse;margin:8px 0;color:#111}.res td{background:#fff;padding:4px 10px;font-size:20px;font-weight:700}.res tr:nth-child(even) td{background:#e2e2e2}.res td+td{text-align:right}@media (prefers-reduced-motion:no-preference){.rs{animation:fl .45s 7}}@keyframes fl{50%{opacity:.1}}button{font:inherit;font-weight:700;font-size:20px;background:var(--accent);color:#04181d;border:0;border-radius:6px;padding:8px 18px;cursor:pointer;margin-top:8px}.kr button,#rk{font-size:15px;padding:1px 10px;margin:0;min-width:66px;background:transparent;color:var(--ink);border:1px solid var(--line)}#rk{margin-top:6px}.kr button.on{background:var(--accent);color:#04181d;border-color:var(--accent)}#c3{position:absolute;inset:0;width:100%;height:100%;aspect-ratio:auto;z-index:0}#c{position:relative;z-index:1;pointer-events:none}.ov{z-index:3}.pmsg{z-index:2}button:focus-visible{outline:3px solid var(--ink);outline-offset:2px}.sg{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;margin-top:8px}.sg .side{margin:0}.menu{display:flex;flex-direction:column;gap:8px;margin-top:12px}.menu button{margin:0}button.alt{background:transparent;color:var(--ink);border:2px solid var(--line)}.res button.alt{color:#fff;border-color:#fff}.home{text-align:center}summary{cursor:pointer;color:var(--mute);margin-top:10px}</style>
 </head>
 <body>
 <div class="wrap">
-  <div class="main">
-    <div id="fsRoot">
-      <div class="sb">
-        <div class="b"><div class="sn" id="bs">0</div><div class="lbl">Personal best</div></div>
-        <div class="m"><div id="ph">Ready</div><div id="tm">2:30</div></div>
-        <div class="r"><div class="lbl">Solo run</div>
-          <div class="stat"><small>Net</small><b id="sN">0</b></div>
-          <div class="stat"><small>Basket H/L</small><b id="sB">0</b><b id="sB2">0</b></div>
-          <div class="stat"><small>Chamber H/L</small><b id="sC">0</b><b id="sC2">0</b></div>
-          <div class="stat"><small>Ascent</small><b id="sA">0</b></div>
-          <div class="sn" id="sc">0</div></div>
-      </div>
-      <div class="stage"><canvas id="c" width="1000" height="620"></canvas><div class="ov" id="ov"></div><div class="pmsg" id="fsHint"></div></div>
-      <div class="st"><span>Holding <b id="hd"></b></span><span>Lift <b id="lf"></b></span><span id="rc">Length <b id="rb"></b></span><span>Drive <b id="dm"></b></span><span>Human player <b id="hp"></b></span></div>
-      <p id="hint"></p>
-    </div>
-    <div>
-      <div class="side"><h2>Controls</h2><div id="kb"></div><button id="rk">Reset keys</button><p>Click a key, then press its new key (Esc cancels). Gamepad: left stick drive, right stick turn and lift, triggers extend.</p></div>
-      <div class="side"><h2>Gamepad buttons</h2><div id="gb"></div><p>Click, then press the gamepad button.</p></div>
-      <div class="side"><h2>Setup</h2><div class="kr"><span>Preload</span><select id="pre"><option value="p">Specimen</option><option value="s">Sample</option></select></div><div class="kr"><span>Submersible samples</span><b id="vn"></b></div><input type="range" id="nsub" min="0" max="60"><p>Applies when the next match starts or when you press the reset key.</p>
-        <div class="kr"><span>Auto-transfer after intake</span><input type="checkbox" id="axfer"></div>
-        <div class="kr"><span>Auto-retract slide after intake</span><input type="checkbox" id="ainr"></div>
-        <div class="kr"><span>Auto-retract lift &amp; slide after scoring</span><input type="checkbox" id="aoutr"></div>
-        <p>The manual flip key always works too, and overrides auto-transfer for that cycle.</p></div>
-      <div class="side"><h2>Speeds</h2><div id="sl"></div></div>
-    </div>
-  </div>
+<div class="main">
+<div id="fsRoot">
+<div class="sb">
+<div class="b"><div class="sn" id="bs">0</div><div class="lbl">Personal best</div></div>
+<div class="m"><div id="ph">Ready</div><div id="tm">2:30</div></div>
+<div class="r"><div class="lbl">Solo run</div>
+<div class="stat"><small>Net</small><b id="sN">0</b></div>
+<div class="stat"><small>Basket H/L</small><b id="sB">0</b><b id="sB2">0</b></div>
+<div class="stat"><small>Chamber H/L</small><b id="sC">0</b><b id="sC2">0</b></div>
+<div class="stat"><small>Ascent</small><b id="sA">0</b></div>
+<div class="sn" id="sc">0</div></div>
 </div>
+<div class="stage"><canvas id="c3"></canvas><canvas id="c" width="1000" height="620"></canvas><div class="ov" id="ov"></div><div class="ov" id="sp" hidden><div class="card" style="max-width:900px"><h1>Settings</h1><button data-go="back">Back</button><div class="sg"><div class="side"><h2>Controls</h2><div id="kb"></div><button id="rk">Reset keys</button><p>Click a key, then press its new key (Esc cancels). Gamepad: left stick drive, right stick turn and lift, triggers extend.</p></div>
+<div class="side"><h2>Gamepad buttons</h2><div id="gb"></div><p>Click, then press the gamepad button.</p></div>
+<div class="side"><h2>Setup</h2><div class="kr"><span>Preload</span><select id="pre"><option value="p">Specimen</option><option value="s">Sample</option></select></div><div class="kr"><span>Submersible samples</span><b id="vn"></b></div><input type="range" id="nsub" min="0" max="60"><p>Applies when the next match starts or when you press the reset key.</p>
+<div class="kr"><span>Auto-transfer after intake</span><input type="checkbox" id="axfer"></div>
+<div class="kr"><span>Auto-retract slide after intake</span><input type="checkbox" id="ainr"></div>
+<div class="kr"><span>Auto-retract lift &amp; slide after scoring</span><input type="checkbox" id="aoutr"></div>
+<p>The manual flip key always works too, and overrides auto-transfer for that cycle.</p></div>
+<div class="side"><h2>Speeds</h2><div id="sl"></div></div>
+</div></div></div><div class="pmsg" id="fsHint"></div></div>
+<div class="st"><span>Holding <b id="hd"></b></span><span>Lift <b id="lf"></b></span><span id="rc">Length <b id="rb"></b></span><span>Drive <b id="dm"></b></span><span>Human player <b id="hp"></b></span></div>
+<p id="hint"></p>
+</div>
+</div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 const $=id=>document.getElementById(id),C=$('c'),g=C.getContext('2d'),F=144,FN='"Barlow Condensed",sans-serif';
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-// Point values follow the ones you gave me; auto and teleop use the same table. Verify the rest in the Game Manual.
 const PTS={net:2,low:4,high:8,sl:6,sh:10,asc:[0,3,15,30],park:3};
-// Manual: low chamber 13in, high chamber 26in, low basket lip 25.75in, high basket lip 43in, low rung top 20in, high rung top 36in.
-// R104: no real vertical height limit; capped here for the slider/UI.
 const LIM={body:18,len:42,height:46,bHi:43,bLo:25.75,cHi:26,cLo:13};
 const OBS=[[144,0],[131,0],[131,24],[144,36]],NET=[[144,144],[122,144],[144,122]],ASC=[[48,88],[48,97],[72,107],[96,97],[96,88]];
 const SLOTS=[[142,6],[142,14],[142,22]];
-const CH_SP=2.3,CH_LO=57,CH_HI=87; // chamber-bar packing: spacing and usable y-range
-// 3D obstacles (inches). soft = bars and rungs: the claw may hook over them, the arm body may not pass through.
+const CH_SP=2.3,CH_LO=57,CH_HI=87;
 const OBST=[],ob=(x,y,sx,sy,z0,z1,soft)=>OBST.push({x0:x-sx/2,x1:x+sx/2,y0:y-sy/2,y1:y+sy/2,z0,z1,soft});
-[[49,57],[95,57],[49,87],[95,87]].forEach(([x,y])=>ob(x,y,2.2,2.2,0,32));
+[[49,57],[95,57],[49,87],[95,87]].forEach(([x,y])=>ob(x,y,2.6,2.6,0,37.5));
+[49,95].forEach(x=>ob(x,72,1.4,30,35.3,36.7,1));
 [13,26].forEach(h=>{ob(96.7,72,1.4,32,h-.7,h+.7,1);ob(47.3,72,1.4,32,h-.7,h+.7,1)});
 [20,36].forEach(h=>{ob(72,88.7,48,1.4,h-.7,h+.7,1);ob(72,55.3,48,1.4,h-.7,h+.7,1)});
 [[142.5,142.5,136,136],[1.5,1.5,8,8]].forEach(([px,py,bx,by])=>{ob(px,py,2.4,2.4,0,48);[25,43].forEach(zt=>ob(bx,by,12,12,zt-9,zt-3.5))});
 function place(x,y){x=clamp(x,10,134);y=clamp(y,10,134);
-  if(x>38&&x<106&&y>46&&y<98){const d=[x-38,106-x,y-46,98-y],i=d.indexOf(Math.min(...d));if(i===0)x=38;else if(i===1)x=106;else if(i===2)y=46;else y=98}
-  for(const[cx,cy]of[[144,144],[0,0]]){const dx=x-cx,dy=y-cy,dd=Math.hypot(dx,dy);if(dd<28){x=cx+dx/dd*28;y=cy+dy/dd*28}}
-  return[x,y]}
-// The whole four-bar-plus-slide assembly rotates 180 degrees about the chassis center to place without turning
-// the drivetrain -- side=1 is forward (intake), side=-1 swings the same assembly out the back (score/transfer).
-// The vertical slide (the fixed -7/-5.4 posts in robot()) never moves. The ENTIRE horizontal extension
-// assembly -- not just the claw tip -- relocates to sit outside the chassis on whichever side matches the
-// current orientation: side=1 puts it just past the front edge (intake), side=-1 puts the whole thing just
-// past the back edge (scoring), matching a wrist+rail that swings from one side of the fixed slide to the
-// other rather than pivoting from a point still inside the chassis.
-const OUT=9.5; // just past the chassis half-width (9in), so the rail's near end already clears the frame
+if(x>38&&x<106&&y>46&&y<98){const d=[x-38,106-x,y-46,98-y],i=d.indexOf(Math.min(...d));if(i===0)x=38;else if(i===1)x=106;else if(i===2)y=46;else y=98}
+for(const[cx,cy]of[[144,144],[0,0]]){const dx=x-cx,dy=y-cy,dd=Math.hypot(dx,dy);if(dd<28){x=cx+dx/dd*28;y=cy+dy/dd*28}}
+return[x,y]}
+const OUT=9.5;
 function armHit(x,y,a,H,E,side=1){
-  const c=Math.cos(a),s=Math.sin(a),reach=OUT+2+E;
-  for(let t=OUT;t<=reach+.01;t+=1){const p=side*t,claw=t>reach-3;
-    for(const q of[-3.2,-1,1,3.2]){const px=x+p*c-q*s,py=y+p*s+q*c;
-      if(px<1||px>143||py<1||py>143)return true;
-      const z0=claw?H:H+3.6,z1=H+7.4;
-      for(const o of OBST){if(claw&&o.soft)continue;if(px>o.x0&&px<o.x1&&py>o.y0&&py<o.y1&&z1>o.z0&&z0<o.z1)return true}}}
-  return false}
-const COL={y:[242,194,48],r:[217,68,58],b:[61,111,208]};
-const ACT=[['fwd','Drive forward'],['back','Drive back'],['left','Strafe left'],['right','Strafe right'],['tl','Turn left'],['tr','Turn right'],['up','Lift up'],['dn','Lift down'],['out','Extend out'],['in','Retract'],['act','Score / drop'],['climb','Climb (endgame)'],['cam','Rotate view'],['mode','Drive mode'],['flip','Flip arm to back'],['pause','Pause / resume'],['full','Full screen'],['reset','Reset match']];
+const c=Math.cos(a),s=Math.sin(a),reach=OUT+2+E;
+for(let t=OUT;t<=reach+.01;t+=1){const p=side*t,claw=t>reach-3;
+for(const q of[-3.4,-2.2,-1.1,0,1.1,2.2,3.4]){const px=x+p*c-q*s,py=y+p*s+q*c;
+if(px<1||px>143||py<1||py>143)return true;
+const z0=claw?H:H+3.6,z1=H+7.4;
+for(const o of OBST){if(claw&&o.soft)continue;if(px>o.x0&&px<o.x1&&py>o.y0&&py<o.y1&&z1>o.z0&&z0<o.z1)return true}}}
+return false}
+const ALLI='r',COL={y:[242,194,48],r:[217,68,58],b:[61,111,208]};
+const ACT=[['fwd','Drive forward'],['back','Drive back'],['left','Strafe left'],['right','Strafe right'],['tl','Turn left'],['tr','Turn right'],['up','Lift up'],['dn','Lift down'],['out','Extend out'],['in','Retract'],['act','Score / drop'],['climb','Climb (endgame)'],['cam','Camera view'],['mode','Drive mode'],['flip','Flip arm to back'],['pause','Pause / resume'],['full','Full screen'],['reset','Reset match']];
 const DEF={fwd:'KeyW',back:'KeyS',left:'KeyA',right:'KeyD',tl:'KeyQ',tr:'KeyE',up:'ArrowUp',dn:'ArrowDown',out:'ArrowRight',in:'ArrowLeft',act:'Space',climb:'KeyF',cam:'KeyV',mode:'KeyC',flip:'KeyX',pause:'KeyP',full:'KeyG',reset:'KeyR'};
 const SL=[['drive','Drive speed',20,110],['lift','Lift speed',10,90],['ext','Extension speed',10,90]];
-const HPL=[['time','Human player clip time',1,8]]; // reuses the same slider renderer, seconds not in/s
-let B={...DEF},ST={drive:80,lift:48,ext:48},bind=null,S,K={},padA=0,padB=0,padY=0,padOff=false,msgT=0,msgS='',cam=1,SET={pre:'p',n:18},AUTO={xfer:true,inR:true,outR:true},HP={time:3.5},GP={act:0,climb:1,mode:3},gpBind=null;
-try{Object.assign(B,JSON.parse(localStorage.getItem('itd-keys')||'{}'));Object.assign(ST,JSON.parse(localStorage.getItem('itd-set')||'{}'));Object.assign(SET,JSON.parse(localStorage.getItem('itd-setup')||'{}'));Object.assign(AUTO,JSON.parse(localStorage.getItem('itd-auto')||'{}'));Object.assign(HP,JSON.parse(localStorage.getItem('itd-hp')||'{}'));Object.assign(GP,JSON.parse(localStorage.getItem('itd-gp')||'{}'))}catch(e){}
+const HPL=[['time','Human player clip time',1,8]];
+let B={...DEF},ST={drive:80,lift:48,ext:48},bind=null,S,K={},padA=0,padB=0,padY=0,padOff=false,msgT=0,msgS='',cam=1,SET={pre:'p',n:18},AUTO={xfer:true,inR:true,outR:true},HP={time:3.5},GP={act:0,climb:1,mode:3,flip:2,cam:5,pause:9,reset:8},gpBind=null,TEAM='17012';
+try{Object.assign(B,JSON.parse(localStorage.getItem('itd-keys')||'{}'));Object.assign(ST,JSON.parse(localStorage.getItem('itd-set')||'{}'));Object.assign(SET,JSON.parse(localStorage.getItem('itd-setup')||'{}'));Object.assign(AUTO,JSON.parse(localStorage.getItem('itd-auto')||'{}'));Object.assign(HP,JSON.parse(localStorage.getItem('itd-hp')||'{}'));Object.assign(GP,JSON.parse(localStorage.getItem('itd-gp')||'{}'));TEAM=localStorage.getItem('itd-team')??TEAM}catch(e){}
 const store=(k,o)=>{try{localStorage.setItem(k,JSON.stringify(o))}catch(e){}};
 const kn=c=>({Space:'Space',ArrowUp:'↑',ArrowDown:'↓',ArrowLeft:'←',ArrowRight:'→'}[c]||c.replace(/^(Key|Digit)/,''));
 function keys(){$('kb').innerHTML=ACT.map(([a,l])=>`<div class="kr"><span>${l}</span><button data-a="${a}" class="${bind===a?'on':''}">${bind===a?'Press key':kn(B[a])}</button></div>`).join('')}
-const GPL=[['act','Score / drop'],['climb','Climb'],['mode','Drive mode']];
+const GPL=[['act','Score / drop'],['climb','Climb'],['mode','Drive mode'],['flip','Flip arm'],['cam','Camera view'],['pause','Pause / resume'],['reset','Reset match']];
 function gpKeys(){$('gb').innerHTML=GPL.map(([a,l])=>`<div class="kr"><span>${l}</span><button data-gp="${a}" class="${gpBind===a?'on':''}">${gpBind===a?'Press button':'Button '+GP[a]}</button></div>`).join('')}
 $('gb').onclick=e=>{const a=e.target.dataset&&e.target.dataset.gp;if(a){gpBind=a;gpKeys();e.target.blur()}};
 function sliders(){$('sl').innerHTML=SL.map(([k,l,a,b])=>`<div class="kr"><span>${l}</span><b id="v${k}">${ST[k]} in/s</b></div><input type="range" data-k="${k}" min="${a}" max="${b}" value="${ST[k]}">`).join('')
-  +HPL.map(([k,l,a,b])=>`<div class="kr"><span>${l}</span><b id="vhp${k}">${HP[k]}s</b></div><input type="range" data-hp="${k}" min="${a}" max="${b}" step="0.5" value="${HP[k]}">`).join('')}
++HPL.map(([k,l,a,b])=>`<div class="kr"><span>${l}</span><b id="vhp${k}">${HP[k]}s</b></div><input type="range" data-hp="${k}" min="${a}" max="${b}" step="0.5" value="${HP[k]}">`).join('')}
 $('kb').onclick=e=>{const a=e.target.dataset&&e.target.dataset.a;if(a){bind=a;keys();e.target.blur()}};
 $('rk').onclick=()=>{B={...DEF};bind=null;store('itd-keys',B);keys()};
 $('sl').oninput=e=>{const k=e.target.dataset.k,hk=e.target.dataset.hp;
-  if(k){ST[k]=+e.target.value;$('v'+k).textContent=ST[k]+' in/s';store('itd-set',ST)}
-  if(hk){HP[hk]=+e.target.value;$('vhp'+hk).textContent=HP[hk]+'s';store('itd-hp',HP)}};
+if(k){ST[k]=+e.target.value;$('v'+k).textContent=ST[k]+' in/s';store('itd-set',ST)}
+if(hk){HP[hk]=+e.target.value;$('vhp'+hk).textContent=HP[hk]+'s';store('itd-hp',HP)}};
 $('sl').onchange=e=>e.target.blur();
 function initSetup(){$('pre').value=SET.pre;$('nsub').value=SET.n;$('vn').textContent=SET.n;
-  $('pre').onchange=e=>{SET.pre=e.target.value;store('itd-setup',SET);e.target.blur()};
-  $('nsub').oninput=e=>{SET.n=+e.target.value;$('vn').textContent=SET.n;store('itd-setup',SET)};$('nsub').onchange=e=>e.target.blur();
-  $('axfer').checked=AUTO.xfer;$('ainr').checked=AUTO.inR;$('aoutr').checked=AUTO.outR;
-  $('axfer').onchange=e=>{AUTO.xfer=e.target.checked;store('itd-auto',AUTO)};
-  $('ainr').onchange=e=>{AUTO.inR=e.target.checked;store('itd-auto',AUTO)};
-  $('aoutr').onchange=e=>{AUTO.outR=e.target.checked;store('itd-auto',AUTO)}}
+$('pre').onchange=e=>{SET.pre=e.target.value;store('itd-setup',SET);e.target.blur()};
+$('nsub').oninput=e=>{SET.n=+e.target.value;$('vn').textContent=SET.n;store('itd-setup',SET)};$('nsub').onchange=e=>e.target.blur();
+$('axfer').checked=AUTO.xfer;$('ainr').checked=AUTO.inR;$('aoutr').checked=AUTO.outR;
+$('axfer').onchange=e=>{AUTO.xfer=e.target.checked;store('itd-auto',AUTO)};
+$('ainr').onchange=e=>{AUTO.inR=e.target.checked;store('itd-auto',AUTO)};
+$('aoutr').onchange=e=>{AUTO.outR=e.target.checked;store('itd-auto',AUTO)}}
 function pip(x,y,p){let c=false;for(let i=0,j=p.length-1;i<p.length;j=i++){const[a,b]=p[i],[u,w]=p[j];if((b>y)!==(w>y)&&x<(u-a)*(y-b)/(w-b)+a)c=!c}return c}
 const inAsc=(x,y)=>{for(let i=-1;i<=1;i++)for(let j=-1;j<=1;j++)if(pip(x+i*9,y+j*9,ASC))return true;return false};
 const ph=()=>S.t<30?0:S.t<38?1:S.t<128?2:3;
-// ---- isometric projection: world inches (x,y,z) -> screen. The camera continuously orbits the field
-// (camAngle) and re-centers each frame (see updateCam()) so the robot stays roughly on-screen as it
-// drives around -- a chase-style camera instead of a single fixed corner, for a more three-dimensional feel.
-const AS=3.2;let CX=500,CY=340,camAngle=-Math.PI/4,camAuto=true;
-const R=(x,y)=>{const cx=F/2,cy=F/2,dx=x-cx,dy=y-cy,c=Math.cos(camAngle),s=Math.sin(camAngle);return[cx+dx*c-dy*s,cy+dx*s+dy*c]};
-const Rv=(x,y)=>{const c=Math.cos(-camAngle),s=Math.sin(-camAngle);return[x*c-y*s,x*s+y*c]};
-function updateCam(){const[u,v]=R(S.r.x,S.r.y);CX=500-(u-v)*AS;CY=340-(u+v)*AS*.5}
-const P2=(u,v,z)=>[CX+(u-v)*AS,CY+(u+v)*AS*.5-z*AS*.9];
-const P=(x,y,z=0)=>{const[u,v]=R(x,y);return P2(u,v,z)};
-const rgb=(c,k)=>`rgb(${Math.min(255,c[0]*k)|0},${Math.min(255,c[1]*k)|0},${Math.min(255,c[2]*k)|0})`;
-function fillQ(p,f){g.beginPath();p.forEach(([x,y],i)=>i?g.lineTo(x,y):g.moveTo(x,y));g.closePath();g.fillStyle=f;g.fill();g.strokeStyle='rgba(0,0,0,.28)';g.lineWidth=.8;g.stroke()}
-const poly=(p,f,z=0)=>fillQ(p.map(([x,y])=>P(x,y,z)),f);
-const pl=(c,w,...p)=>{g.strokeStyle=c;g.lineWidth=w;g.beginPath();p.forEach(([x,y],i)=>{const[X,Y]=P(x,y,0);i?g.lineTo(X,Y):g.moveTo(X,Y)});g.stroke()};
-function OB(cx,cy,z,l,w,h,a,c){
-  const co=Math.cos(a),si=Math.sin(a);
-  const q=[[-l/2,-w/2],[l/2,-w/2],[l/2,w/2],[-l/2,w/2]].map(([p,r])=>R(cx+p*co-r*si,cy+p*si+r*co));
-  for(let i=0;i<4;i++){const[x1,y1]=q[i],[x2,y2]=q[(i+1)%4],nx=y2-y1,ny=x1-x2;
-    if(nx+ny>.01){const t=(nx-ny)/Math.hypot(nx,ny)/1.414;fillQ([P2(x1,y1,z),P2(x2,y2,z),P2(x2,y2,z+h),P2(x1,y1,z+h)],rgb(c,.72+.22*t))}}
-  fillQ(q.map(([u,v])=>P2(u,v,z+h)),rgb(c,1.1));
-}
+let camMode=0,viewYaw=0;
 function reset(){
-  const it=[];
-  [[48,[6,17,28],'y'],[96,[6,17,28],'r'],[48,[116,127,138],'b'],[96,[116,127,138],'y']].forEach(([x,ys,c])=>ys.forEach(y=>it.push({x,y,t:'s',c,a:0})));
-  for(let i=0;i<SET.n;i++){
-    let x,y,tries=0;
-    do{x=51+Math.random()*42;y=58.5+Math.random()*27;tries++}
-    while(tries<20&&it.some(o=>o.t==='s'&&Math.hypot(o.x-x,o.y-y)<4.6));
-    it.push({x,y,t:'s',c:'yrb'[i%3],a:Math.random()*3.14});
-  }
-  const wallN=SET.pre==='p'?1:2;
-  for(let i=0;i<wallN;i++)it.push({x:SLOTS[i][0],y:SLOTS[i][1],t:'p',c:'r',a:0,w:1,born:0});
-  S={t:0,score:0,autoSnap:0,run:false,over:false,paused:false,field:true,stock:0,pend:0,clip:0,drop:null,pops:[],items:it,bskt:{hi:[],lo:[]},cnt:{net:0,bh:0,bl:0,ch:0,cl:0,asc:0},prevHold:SET.pre,
-    r:SET.pre==='p'
-      ?{x:130,y:14,a:0,vx:0,vy:0,H:0,E:0,hold:'p',hc:'r',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingRetractE:false,pendingRetractH:false,pendingXfer:false}
-      :{x:130,y:130,a:-3*Math.PI/4,vx:0,vy:0,H:0,E:0,hold:'s',hc:'y',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingRetractE:false,pendingRetractH:false,pendingXfer:false}
-  };
+const it=[];
+[[48,[6,17,28],'y'],[96,[6,17,28],'r'],[48,[116,127,138],'b'],[96,[116,127,138],'y']].forEach(([x,ys,c])=>ys.forEach(y=>it.push({x,y,t:'s',c,a:0})));
+for(let i=0;i<SET.n;i++){
+let x,y,tries=0;
+do{x=51+Math.random()*42;y=58.5+Math.random()*27;tries++}
+while(tries<20&&it.some(o=>o.t==='s'&&Math.hypot(o.x-x,o.y-y)<4.6));
+it.push({x,y,t:'s',c:'yrb'[i%3],a:Math.random()*3.14});
+}
+const wallN=SET.pre==='p'?1:2;
+for(let i=0;i<wallN;i++)it.push({x:SLOTS[i][0],y:SLOTS[i][1],t:'p',c:'r',a:0,w:1,born:0});
+S={t:0,score:0,autoSnap:0,ru:0,rm:0,tr:0,run:false,over:false,paused:false,field:true,stock:0,pend:0,clip:0,drop:null,pops:[],items:it,bskt:{hi:[],lo:[]},cnt:{net:0,bh:0,bl:0,ch:0,cl:0,asc:0},prevHold:SET.pre,
+r:SET.pre==='p'
+?{x:130,y:14,a:0,vx:0,vy:0,H:0,E:0,hold:'p',hc:'r',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingRetractE:false,pendingRetractH:false,pendingXfer:false}
+:{x:130,y:130,a:-3*Math.PI/4,vx:0,vy:0,H:0,E:0,hold:'s',hc:'y',hang:false,want:0,rise:0,side:1,jaw:1,autoRetractE:false,autoRetractH:false,pendingRetractE:false,pendingRetractH:false,pendingXfer:false}
+};
 }
 const tip=()=>{const r=S.r,side=r.side||1,p=side*(OUT+2+r.E);return[r.x+Math.cos(r.a)*p,r.y+Math.sin(r.a)*p]};
 const say=t=>{msgS=t;msgT=2.8};
-// Scoring: a running total. AUTO/TELEOP share the same point values (Table 10-3) and pieces are counted once, not doubled.
 const total=()=>S.score;
 function add(p,l,k){S.score+=p;if(k)S.cnt[k]=(S.cnt[k]||0)+1;S.pops.push({x:S.r.x,y:S.r.y,txt:'+'+p,life:1})}
 function act(){
-  const r=S.r;if(!S.run||S.over||r.hang||ph()===1)return;
-  const[tx,ty]=tip(),eff=r.H+3;
-  const nb=Math.hypot(tx-136,ty-136)<11;  // generous basket aim radius
-  if(r.hold==='s'){
-    if(nb&&eff>=LIM.bHi){add(PTS.high,'','bh');S.bskt.hi.push(r.hc||'y');S.drop={x:tx,y:ty,z:eff,to:43,t:S.t}}
-    else if(nb&&eff>=LIM.bLo){add(PTS.low,'','bl');S.bskt.lo.push(r.hc||'y');S.drop={x:tx,y:ty,z:eff,to:25,t:S.t}}
-    else if(pip(tx,ty,NET)&&r.H<20)add(PTS.net,'','net');
-    else if(pip(tx,ty,OBS)&&r.H<20){S.items.push({x:tx,y:ty,t:'s',c:r.hc||'y',a:r.a+Math.PI/2,drop:S.t});say('Dropped. Your human player will clip it into a specimen.')}
-    else{S.items.push({x:tx,y:ty,t:'s',c:r.hc||'y',a:r.a,born:S.t});say('Dropped on the field.')}
-    r.hold=null;
-  }else if(r.hold==='p'){
-    if(tx>82&&tx<110&&ty>47&&ty<97){
-      const hi=r.H>=LIM.cHi-7,lo=!hi&&r.H>=LIM.cLo-7;
-      if(!hi&&!lo)return say('Lift the specimen above a chamber bar first.');
-      const lvl=hi?'hi':'lo',bar=96.7,slots=Array.from({length:Math.floor((CH_HI-CH_LO)/CH_SP)+1},(_,i)=>CH_LO+i*CH_SP).sort((a,b)=>Math.abs(a-72)-Math.abs(b-72));
-      const openY=slots.find(sy=>!S.items.some(o=>o.hung===lvl&&Math.abs(o.y-sy)<CH_SP*.9));
-      if(openY==null)return say('That chamber is full -- push a specimen aside with your claw first.');
-      S.items.push({x:bar,y:openY,t:'p',hung:lvl,c:r.hc||'r',a:0,born:S.t});
-      add(hi?PTS.sh:PTS.sl,'',hi?'ch':'cl');
-      r.hold=null;
-    // House rule (per your request, not an official rule): a specimen dropped in a basket scores the same as a sample there.
-    }else if(nb&&eff>=LIM.bHi){add(PTS.high,'','bh');S.bskt.hi.push(r.hc||'r');S.drop={x:tx,y:ty,z:eff,to:43,t:S.t};r.hold=null}
-    else if(nb&&eff>=LIM.bLo){add(PTS.low,'','bl');S.bskt.lo.push(r.hc||'r');S.drop={x:tx,y:ty,z:eff,to:25,t:S.t};r.hold=null}
-    else{S.items.push({x:tx,y:ty,t:'p',c:r.hc||'r',a:r.a,w:1,born:S.t});say('Dropped on the field.');r.hold=null}
-  }
+const r=S.r;if(!S.run||S.over||r.hang||ph()===1)return;
+const[tx,ty]=tip(),eff=r.H+3;
+const nb=Math.hypot(tx-136,ty-136)<11;
+if(r.hold==='s'){
+if(nb&&eff>=LIM.bHi){add(PTS.high,'','bh');S.bskt.hi.push(r.hc||'y');S.drop={x:tx,y:ty,z:eff,to:43,t:S.t}}
+else if(nb&&eff>=LIM.bLo){add(PTS.low,'','bl');S.bskt.lo.push(r.hc||'y');S.drop={x:tx,y:ty,z:eff,to:25,t:S.t}}
+else if(pip(tx,ty,NET)&&r.H<20)add(PTS.net,'','net');
+else if(pip(tx,ty,OBS)&&r.H<20){S.items.push({x:tx,y:ty,t:'s',c:r.hc||'y',a:r.a+Math.PI/2,drop:S.t});say('Dropped. Your human player will clip it into a specimen.')}
+else{S.items.push({x:tx,y:ty,t:'s',c:r.hc||'y',a:r.a,born:S.t});say('Dropped on the field.')}
+r.hold=null;
+}else if(r.hold==='p'){
+if(tx>82&&tx<110&&ty>47&&ty<97){
+const hi=r.H>=LIM.cHi-7&&r.H<=LIM.cHi+4,lo=r.H>=LIM.cLo-7&&r.H<=LIM.cLo+4;
+if(!hi&&!lo)return say('Line the specimen up with a chamber bar: not too high, not too low.');
+const lvl=hi?'hi':'lo',bar=96.7,slots=Array.from({length:Math.floor((CH_HI-CH_LO)/CH_SP)+1},(_,i)=>CH_LO+i*CH_SP).sort((a,b)=>Math.abs(a-72)-Math.abs(b-72));
+const openY=slots.find(sy=>!S.items.some(o=>o.hung===lvl&&Math.abs(o.y-sy)<CH_SP*.9));
+if(openY==null)return say('That chamber is full -- push a specimen aside with your claw first.');
+S.items.push({x:bar,y:openY,t:'p',hung:lvl,c:r.hc||'r',a:0,born:S.t});
+add(hi?PTS.sh:PTS.sl,'',hi?'ch':'cl');
+r.hold=null;
+}else if(nb&&eff>=LIM.bHi){add(PTS.high,'','bh');S.bskt.hi.push(r.hc||'r');S.drop={x:tx,y:ty,z:eff,to:43,t:S.t};r.hold=null}
+else if(nb&&eff>=LIM.bLo){add(PTS.low,'','bl');S.bskt.lo.push(r.hc||'r');S.drop={x:tx,y:ty,z:eff,to:25,t:S.t};r.hold=null}
+else{S.items.push({x:tx,y:ty,t:'p',c:r.hc||'r',a:r.a,w:1,born:S.t});say('Dropped on the field.');r.hold=null}
+}
 }
 function climb(){
-  const r=S.r;if(!S.run||S.over||ph()===1)return;
-  if(ph()<3)return say('Ascent opens for the last 30 seconds.');
-  if(!r.hang&&!inAsc(r.x,r.y))return say('Drive into the glowing ascent zone first, the white trapezoid below the submersible.');
-  if(!r.hang){r.hang=true;r.want=2;r.vx=r.vy=0}
-  else if(r.want<3)r.want=3;
+const r=S.r;if(!S.run||S.over||ph()===1)return;
+if(ph()<3)return say('Ascent opens for the last 30 seconds.');
+if(!r.hang&&!inAsc(r.x,r.y))return say('Drive into the glowing ascent zone first, the white trapezoid below the submersible.');
+if(!r.hang){r.hang=true;r.want=2;r.vx=r.vy=0}
+else if(r.want<3)r.want=3;
 }
+let padPrev=[];
 function pad(){
-  const o={x:0,y:0,rx:0,ly:0,ex:0};let p=null;
-  if(padOff)return o;
-  try{p=[...(navigator.getGamepads?navigator.getGamepads():[])].find(x=>x)}catch(e){padOff=true}
-  if(!p)return o;
-  const dz=v=>Math.abs(v)<.15?0:v,bv=i=>p.buttons[i]?p.buttons[i].value:0;
-  o.x=dz(p.axes[0]||0);o.y=dz(p.axes[1]||0);o.rx=dz(p.axes[2]||0);o.ly=dz(p.axes[3]||0);o.ex=bv(7)-bv(6);
-  if(gpBind){for(let i=0;i<p.buttons.length;i++){if(bv(i)>.5){GP[gpBind]=i;store('itd-gp',GP);gpBind=null;gpKeys();break}}return o}
-  const a=bv(GP.act)>.5,b=bv(GP.climb)>.5,y=bv(GP.mode)>.5;if(a&&!padA)act();if(b&&!padB)climb();if(y&&!padY)S.field=!S.field;padA=a;padB=b;padY=y;return o;
-}
+const o={x:0,y:0,rx:0,ly:0,ex:0};let p=null;
+if(padOff)return o;
+try{p=[...(navigator.getGamepads?navigator.getGamepads():[])].find(x=>x)}catch(e){padOff=true}
+if(!p)return o;
+const dz=v=>Math.abs(v)<.15?0:v,bv=i=>p.buttons[i]?p.buttons[i].value:0,dn=p.buttons.map((_,i)=>bv(i)>.5),up=i=>dn[i]&&!padPrev[i];
+o.x=dz(p.axes[0]||0);o.y=dz(p.axes[1]||0);o.rx=dz(p.axes[2]||0);o.ly=dz(p.axes[3]||0);o.ex=bv(7)-bv(6);
+if(gpBind){const i=dn.findIndex((_,i)=>up(i));if(i>=0){GP[gpBind]=i;store('itd-gp',GP);gpBind=null;gpKeys()}}
+else{const box=!$('sp').hidden?$('sp'):!$('ov').hidden?$('ov'):null;
+if(box){const bs=[...box.querySelectorAll('button,input[type=checkbox]')],i=bs.indexOf(document.activeElement),n=bs.length||1;
+if(up(13))bs[(i+1)%n]?.focus();if(up(12))bs[(i+n-1)%n]?.focus();if(up(0)&&i>=0)bs[i].click();
+if(up(1)&&box.id==='sp')GO.back();if(box.id==='ov'&&up(GP.pause))ACTS.pause()}
+else for(const a in GP)if(up(GP[a]))ACTS[a]()}
+padPrev=dn;return o}
 addEventListener('keydown',e=>{
-  if(bind){e.preventDefault();if(e.code!=='Escape'){const old=B[bind];for(const k in B)if(k!==bind&&B[k]===e.code)B[k]=old;B[bind]=e.code;store('itd-keys',B)}bind=null;keys();return}
-  if(Object.values(B).includes(e.code)&&S.run)e.preventDefault();
-  if(!e.repeat){
-    if(e.code===B.reset){start();return}
-    if(e.code===B.cam)camAuto=!camAuto;
-    if(e.code===B.full)toggleFull();
-    if(S.run){
-      if(e.code===B.pause)S.paused=!S.paused;
-      if(!S.paused){if(e.code===B.act)act();if(e.code===B.climb)climb();if(e.code===B.mode)S.field=!S.field;if(e.code===B.flip&&!S.r.hang){S.r.side*=-1;S.r.pendingXfer=false}}
-    }
-  }K[e.code]=1;
+if(bind){e.preventDefault();if(e.code!=='Escape'){const old=B[bind];for(const k in B)if(k!==bind&&B[k]===e.code)B[k]=old;B[bind]=e.code;store('itd-keys',B)}bind=null;keys();return}
+if(!$('sp').hidden){if(e.code==='Escape')GO.back();return}
+if(Object.values(B).includes(e.code)&&S.run)e.preventDefault();
+if(!e.repeat){const a=Object.keys(ACTS).find(k=>B[k]===e.code);if(a)ACTS[a]()}
+K[e.code]=1;
 });
 addEventListener('keyup',e=>K[e.code]=0);
-// A CSS class we control directly, rather than relying only on the native :fullscreen match, which can behave
-// inconsistently (or be blocked outright) inside an embedded preview iframe.
 function toggleFull(){
-  const el=document.getElementById('fsRoot');if(!el)return;
-  const turnOn=!el.classList.contains('fsOn');
-  el.classList.toggle('fsOn',turnOn);
-  try{
-    if(turnOn){(el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el)}
-    else if(document.fullscreenElement){(document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document)}
-  }catch(e){}
-  setTimeout(fit,30);
+const el=document.getElementById('fsRoot');if(!el)return;
+const turnOn=!el.classList.contains('fsOn');
+el.classList.toggle('fsOn',turnOn);
+try{
+if(turnOn){(el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el)}
+else if(document.fullscreenElement){(document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document)}
+}catch(e){}
+setTimeout(fit,30);
 }
 document.addEventListener('fullscreenchange',()=>{
-  const el=document.getElementById('fsRoot');
-  if(!document.fullscreenElement&&el)el.classList.remove('fsOn');
-  setTimeout(fit,50);
+const el=document.getElementById('fsRoot');
+if(!document.fullscreenElement&&el)el.classList.remove('fsOn');
+setTimeout(fit,50);
 });
 function sweep(oldV,newV,test,steps=4){let v=oldV;for(let i=1;i<=steps;i++){const nv=oldV+(newV-oldV)*i/steps;if(!test(nv))return v;v=nv}return v}
-function update(dt){
-  const r=S.r,p=pad(),dn=a=>K[B[a]]?1:0;S.t+=dt;
-  r.jaw+=((r.hold?.15:1)-r.jaw)*Math.min(1,dt*6);
-  if(S.drop&&S.t-S.drop.t>.4)S.drop=null;
-  // Detect pickup/place edges for the automatic transfer and retraction options (manual controls always override,
-  // but only once actually released -- see below. A key still held from the moment of pickup/placement no longer
-  // cancels the auto-retract before it ever gets a chance to run).
-  const wasHeld=S.prevHold;
-  if(wasHeld==null&&r.hold!=null){r.side=1;r.pendingXfer=AUTO.xfer;if(AUTO.inR)r.pendingRetractE=true}
-  if(wasHeld!=null&&r.hold==null){if(AUTO.outR){r.pendingRetractE=true;r.pendingRetractH=true}r.side=1;r.pendingXfer=false}
-  S.prevHold=r.hold;
-  if(!S.pk&&S.t>=30){S.pk=1;if(pip(r.x,r.y,OBS))add(PTS.park,'','parkAuto');S.autoSnap=S.score}
-  if(S.t>=158)return finish();
-  // Human player: only ever produces a NEW specimen after the robot deposits a sample in the observation zone
-  // (no background timer/stockpile). Once clipped, it's placed on the first open wall slot -- or queued if the
-  // wall is currently full, and delivered as soon as a slot frees up (i.e. the robot takes one). A loose sample
-  // that ends up in the zone by any means (dropped, pushed, or swept) is picked up the same way.
-  S.items.forEach(o=>{if(o.t==='s'&&o.c!=='b'&&o.drop==null&&!o.w&&!o.hung&&pip(o.x,o.y,OBS))o.drop=S.t});
-  for(let i=S.items.length-1;i>=0;i--){const o=S.items[i];if(o.drop!=null&&S.t-o.drop>1.5){S.items.splice(i,1);S.pend++}}
-  if(S.clip>0){S.clip-=dt;if(S.clip<=0)S.stock++}else if(S.pend>0){S.pend--;S.clip=HP.time}
-  if(S.stock>0){const s=SLOTS.find(([x,y])=>!S.items.some(i=>Math.hypot(i.x-x,i.y-y)<6));if(s){S.items.push({x:s[0],y:s[1],t:'p',c:'r',a:0,w:1,born:S.t});S.stock--}}
-  if(ph()===1){r.vx=r.vy=0;return}
-  // Climb: the vertical slide is what hoists the chassis. It extends up to hook the rung, then
-  // retracts, and the chassis rises by exactly the amount the slide has pulled in.
-  if(r.hang){const w3=r.want>=3,target=w3?24:8,armMax=w3?34:18,k=Math.min(1,dt*3);
-    r.rise=clamp(r.rise+clamp(target-r.rise,-11*dt,11*dt),0,target);
-    r.H=clamp(armMax*(1-r.rise/target),0,LIM.height);
-    r.x+=(clamp(r.x,54,90)-r.x)*k;
-    let da=-Math.PI/2-r.a;da=Math.atan2(Math.sin(da),Math.cos(da));r.a+=da*k;r.E+=(0-r.E)*k;return}
-  const side=r.side||1,lv=dn('up')-dn('dn')-p.ly,ex=dn('out')-dn('in')+p.ex;
-  const ok=(x,y,a,H,E)=>!armHit(x,y,a,H,E,side);
-  // A pending auto-retract only converts to an active one once the relevant key is actually free -- so holding
-  // the same key that caused the pickup/placement doesn't instantly cancel it before it can start.
-  if(r.pendingRetractH&&lv===0){r.autoRetractH=true;r.pendingRetractH=false}
-  if(r.pendingRetractE&&ex===0){r.autoRetractE=true;r.pendingRetractE=false}
-  // Cancel only an ACTIVE auto-retract on fresh manual input -- a still-armed pending one should just keep
-  // waiting for the key to be free, since it may be the very key that caused the pickup/placement this frame.
-  if(lv!==0)r.autoRetractH=false;
-  if(ex!==0)r.autoRetractE=false;
-  const nH=lv!==0?clamp(r.H+lv*ST.lift*dt,0,LIM.height):(r.autoRetractH?Math.max(0,r.H-ST.lift*dt):r.H);
-  const nE=ex!==0?clamp(r.E+ex*ST.ext*dt,0,LIM.len-LIM.body):(r.autoRetractE?Math.max(0,r.E-ST.ext*dt):r.E);
-  // Lowering/retracting can never create a new collision, so it always succeeds -- this is what guarantees the
-  // arm can't get permanently stuck (e.g. right after the 180 flip). Only raising/extending is collision-checked.
-  r.H=nH<=r.H?nH:sweep(r.H,nH,v=>ok(r.x,r.y,r.a,v,r.E));
-  r.E=nE<=r.E?nE:sweep(r.E,nE,v=>ok(r.x,r.y,r.a,r.H,v));
-  if(r.autoRetractH&&r.H<=.05)r.autoRetractH=false;if(r.autoRetractE&&r.E<=.05)r.autoRetractE=false;
-  if(r.pendingXfer&&r.H>4){r.side=-1;r.pendingXfer=false}
-  let fx=dn('right')-dn('left')+p.x,fy=dn('back')-dn('fwd')+p.y;
-  const m=Math.hypot(fx,fy);if(m>1){fx/=m;fy/=m}
-  let mx,my;const c=Math.cos(r.a),s=Math.sin(r.a);
-  if(S.field)[mx,my]=Rv((fx+fy)/1.414,(fy-fx)/1.414);else{const f=-fy;mx=c*f-s*fx;my=s*f+c*fx}
-  const sp=ST.drive*(1-.45*r.H/LIM.height),k=Math.min(1,dt*7);
-  r.vx+=(mx*sp-r.vx)*k;r.vy+=(my*sp-r.vy)*k;
-  const na=r.a+(dn('tr')-dn('tl')+p.rx)*3*dt*(1-.3*r.H/LIM.height);
-  r.a=sweep(r.a,na,v=>ok(r.x,r.y,v,r.H,r.E));
-  // Driving the chassis itself is deliberately NEVER blocked by the arm's collision state -- only place()'s
-  // simple chassis-vs-submersible/corner-pole logic applies here. Coupling translation to the arm-tip sweep
-  // used to be able to leave the drivetrain permanently unable to move if the arm was embedded in something
-  // (e.g. right after a flip); decoupling them means retracting the arm is never a *requirement* to keep driving.
-  [r.x,r.y]=place(r.x+r.vx*dt,r.y+r.vy*dt);
-  // The chassis pushes loose game pieces aside instead of driving through them.
-  S.items.forEach(o=>{if(o.drop!=null||o.w)return;const dx=o.x-r.x,dy=o.y-r.y,d=Math.hypot(dx,dy),min=10.5;
-    if(d<min){const k2=d>.01?1/d:0;o.x=clamp(r.x+dx*k2*min,2,142);o.y=clamp(r.y+dy*k2*min,2,142)}});
-  if(!r.hold){
-    const[tx,ty]=tip();
-    // Specimens hanging on the wall can be grabbed regardless of lift height -- they hang at a fixed height.
-    const wi=S.items.findIndex(o=>o.w&&o.drop==null&&Math.hypot(o.x-tx,o.y-ty)<5.5); // o.hung deliberately excluded: a scored specimen can only be slid, never re-grabbed
-    if(wi>=0){const o=S.items[wi];r.hold=o.t;r.hc=o.c;S.items.splice(wi,1)}
-    else{
-      // Grab only when the claw is right down at floor level; otherwise (any height up to ~16in) it
-      // sweeps/pushes instead of grabbing -- this used to be a strict either/or split by height band,
-      // which made it easy to accidentally miss the sweep window. Now sweeping is available whenever
-      // there's nothing to grab, across the whole practical claw-height range.
-      let grabbed=false;
-      if(r.H<=3){
-        const i=S.items.findIndex(o=>o.c!=='b'&&o.drop==null&&!o.w&&!o.hung&&Math.hypot(o.x-tx,o.y-ty)<4.5);
-        if(i>=0){const o=S.items[i];r.hold=o.t;r.hc=o.c;S.items.splice(i,1);grabbed=true}
-      }
-      if(!grabbed&&r.H<=16){
-        // Claw sweeps loose samples along the horizontal extension's reach instead of grabbing them --
-        // push scattered samples toward the human player without picking them up.
-        S.items.forEach(o=>{if(o.c==='b'||o.drop!=null||o.w||o.hung)return;const dx=o.x-tx,dy=o.y-ty,d=Math.hypot(dx,dy),min=3.8;
-          if(d<min){const k2=d>.01?1/d:0;o.x=clamp(tx+dx*k2*min,2,142);o.y=clamp(ty+dy*k2*min,2,142)}});
-        // Hung specimens can also be nudged sideways along the bar to make room, but never on top of a neighbor.
-        const near=S.items.find(o=>o.hung&&Math.hypot(o.x-tx,o.y-ty)<6);
-        if(near){let ny=clamp(ty,CH_LO,CH_HI);
-          S.items.forEach(o=>{if(o===near||o.hung!==near.hung)return;if(Math.abs(ny-o.y)<CH_SP*.9)ny=ny>o.y?o.y+CH_SP:o.y-CH_SP});
-          near.y=clamp(ny,CH_LO,CH_HI);
-        }
-      }
-    }
-  }
+const IR=2,HB=LIM.body/2;
+function pushItems(){const r=S.r,c=Math.cos(r.a),s=Math.sin(r.a),L=S.items.filter(o=>o.drop==null&&!o.w&&!o.hung);
+for(let n=0;n<3;n++){
+for(const o of L){const dx=o.x-r.x,dy=o.y-r.y,u=dx*c+dy*s,v=dy*c-dx*s,d=Math.hypot(u-clamp(u,-HB,HB),v-clamp(v,-HB,HB));
+if(d>=IR)continue;let nu,nv,p;
+if(d>1e-6){nu=(u-clamp(u,-HB,HB))/d;nv=(v-clamp(v,-HB,HB))/d;p=IR-d}
+else{const e=[HB-u,u+HB,HB-v,v+HB],i=e.indexOf(Math.min(...e));nu=i<2?1-2*i:0;nv=i>1?5-2*i:0;p=e[i]+IR}
+o.x+=(nu*c-nv*s)*p;o.y+=(nu*s+nv*c)*p}
+for(let i=0;i<L.length;i++)for(let j=i+1;j<L.length;j++){const a=L[i],b=L[j],dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy);
+if(d<2*IR&&d>1e-6){const p=(2*IR-d)/2/d;a.x-=dx*p;a.y-=dy*p;b.x+=dx*p;b.y+=dy*p}}
+for(const o of L){const x=clamp(o.x,IR,F-IR),y=clamp(o.y,IR,F-IR);r.x+=x-o.x;r.y+=y-o.y;o.x=x;o.y=y}}}
+function update(dt,p){
+const r=S.r,dn=a=>K[B[a]]?1:0;S.t+=dt;
+r.jaw+=((r.hold?.15:1)-r.jaw)*Math.min(1,dt*6);
+if(S.drop&&S.t-S.drop.t>.4)S.drop=null;
+const wasHeld=S.prevHold;
+if(wasHeld==null&&r.hold!=null){r.side=1;r.pendingXfer=AUTO.xfer;if(AUTO.inR)r.pendingRetractE=true}
+if(wasHeld!=null&&r.hold==null){if(AUTO.outR){r.pendingRetractE=true;r.pendingRetractH=true}r.side=1;r.pendingXfer=false}
+S.prevHold=r.hold;
+if(!S.pk&&S.t>=30){S.pk=1;if(pip(r.x,r.y,OBS))add(PTS.park,'','parkAuto');S.autoSnap=S.score}
+if(S.t>=158)return finish();
+if(!S.tr&&S.t>=30){S.tr=1;buzz(8)}
+while(S.rm<MK.length&&158-S.t<=MK[S.rm]){buzz(2);S.rm++}
+if(S.t<S.ru&&performance.now()-rumN>300){rumN=performance.now();rum(400)}
+S.items.forEach(o=>{if(o.t==='s'&&o.c!=='b'&&o.drop==null&&!o.w&&!o.hung&&pip(o.x,o.y,OBS))o.drop=S.t});
+for(let i=S.items.length-1;i>=0;i--){const o=S.items[i];if(o.drop!=null&&S.t-o.drop>1.5){S.items.splice(i,1);S.pend++}}
+if(S.clip>0){S.clip-=dt;if(S.clip<=0)S.stock++}else if(S.pend>0){S.pend--;S.clip=HP.time}
+if(S.stock>0){const s=SLOTS.find(([x,y])=>!S.items.some(i=>Math.hypot(i.x-x,i.y-y)<6));if(s){S.items.push({x:s[0],y:s[1],t:'p',c:'r',a:0,w:1,born:S.t});S.stock--}}
+if(ph()===1){r.vx=r.vy=0;return}
+if(r.hang){const w3=r.want>=3,target=w3?24:8,armMax=w3?34:18,k=Math.min(1,dt*3);
+r.rise=clamp(r.rise+clamp(target-r.rise,-11*dt,11*dt),0,target);
+r.H=clamp(armMax*(1-r.rise/target),0,LIM.height);
+r.x+=(clamp(r.x,54,90)-r.x)*k;
+let da=-Math.PI/2-r.a;da=Math.atan2(Math.sin(da),Math.cos(da));r.a+=da*k;r.E+=(0-r.E)*k;return}
+if(r.pendingRetractH){r.autoRetractH=true;r.pendingRetractH=false}
+if(r.pendingRetractE){r.autoRetractE=true;r.pendingRetractE=false}
+const side=r.side||1,lv=r.autoRetractH?0:dn('up')-dn('dn')-p.ly,ex=r.autoRetractE?0:dn('out')-dn('in')+p.ex;
+const ok=(x,y,a,H,E)=>!armHit(x,y,a,H,E,side);
+const nH=lv!==0?clamp(r.H+lv*ST.lift*dt,0,LIM.height):(r.autoRetractH?Math.max(0,r.H-ST.lift*dt):r.H);
+const nE=ex!==0?clamp(r.E+ex*ST.ext*dt,0,LIM.len-LIM.body):(r.autoRetractE?Math.max(0,r.E-ST.ext*dt):r.E);
+r.H=sweep(r.H,nH,v=>ok(r.x,r.y,r.a,v,r.E));
+r.E=nE<=r.E?nE:sweep(r.E,nE,v=>ok(r.x,r.y,r.a,r.H,v));
+if(r.autoRetractH&&r.H<=.05)r.autoRetractH=false;if(r.autoRetractE&&r.E<=.05)r.autoRetractE=false;
+if(r.pendingXfer&&r.H>4){r.side=-1;r.pendingXfer=false}
+let fx=dn('right')-dn('left')+p.x,fy=dn('back')-dn('fwd')+p.y;
+const m=Math.hypot(fx,fy);if(m>1){fx/=m;fy/=m}
+const ya=S.field?viewYaw+(camMode===1?Math.PI:0):r.a,c=Math.cos(ya),s=Math.sin(ya),f=-fy,mx=c*f-s*fx,my=s*f+c*fx;
+const sp=ST.drive*(1-.45*r.H/LIM.height),k=Math.min(1,dt*7);
+r.vx+=(mx*sp-r.vx)*k;r.vy+=(my*sp-r.vy)*k;
+const na=r.a+(dn('tr')-dn('tl')+p.rx)*3*dt*(1-.3*r.H/LIM.height);
+r.a=sweep(r.a,na,v=>ok(r.x,r.y,v,r.H,r.E));
+const ns=Math.max(1,Math.ceil(Math.hypot(r.vx,r.vy)*dt/3));
+const hit=(x,y)=>armHit(x,y,r.a,r.H,r.E,side),free=!hit(r.x,r.y);
+for(let i=0;i<ns;i++){let[x,y]=place(r.x+r.vx*dt/ns,r.y+r.vy*dt/ns);
+if(free&&hit(x,y))[x,y]=!hit(x,r.y)?[x,r.y]:!hit(r.x,y)?[r.x,y]:[r.x,r.y];
+r.x=x;r.y=y;pushItems()}
+if(!r.hold){
+const[tx,ty]=tip();
+const wi=S.items.findIndex(o=>o.w&&o.drop==null&&Math.hypot(o.x-tx,o.y-ty)<5.5);
+if(wi>=0){const o=S.items[wi];r.hold=o.t;r.hc=o.c;S.items.splice(wi,1)}
+else{
+let grabbed=false;
+if(r.H<=3){
+const i=S.items.findIndex(o=>o.c!=='b'&&o.drop==null&&!o.w&&!o.hung&&Math.hypot(o.x-tx,o.y-ty)<4.5);
+if(i>=0){const o=S.items[i];r.hold=o.t;r.hc=o.c;S.items.splice(i,1);grabbed=true}
+}
+if(!grabbed&&r.H<=16){
+S.items.forEach(o=>{if(o.c==='b'||o.drop!=null||o.w||o.hung)return;const dx=o.x-tx,dy=o.y-ty,d=Math.hypot(dx,dy),min=3.8;
+if(d<min){const k2=d>.01?1/d:0;o.x=clamp(tx+dx*k2*min,2,142);o.y=clamp(ty+dy*k2*min,2,142)}});
+const near=S.items.find(o=>o.hung&&Math.hypot(o.x-tx,o.y-ty)<6);
+if(near){let ny=clamp(ty,CH_LO,CH_HI);
+S.items.forEach(o=>{if(o===near||o.hung!==near.hung)return;if(Math.abs(ny-o.y)<CH_SP*.9)ny=ny>o.y?o.y+CH_SP:o.y-CH_SP});
+near.y=clamp(ny,CH_LO,CH_HI);
+}
+}
+}
+}
 }
 function finish(){
-  // Per the manual, ASCENT and PARK/OBSERVATION-ZONE points are mutually exclusive at match end -- only the higher value counts.
-  const r=S.r,ascLvl=r.hang?(r.rise>=23?3:r.rise>=7?2:1):(inAsc(r.x,r.y)?1:0),ascBonus=PTS.asc[ascLvl],parkBonus=pip(r.x,r.y,OBS)?PTS.park:0;
-  let ascDisplay=0;
-  if(ascLvl>0&&ascBonus>=parkBonus){add(ascBonus,'','ascFinal');S.cnt.asc=ascLvl;ascDisplay=ascBonus}
-  else if(parkBonus>0)add(parkBonus,'','parkFinal');
-  S.over=true;S.run=false;let prev=0;
-  try{prev=+localStorage.getItem('itd-best')||0;if(total()>prev)localStorage.setItem('itd-best',total())}catch(e){}
-  const nb=total()>prev&&total()>0;if(nb)$('bs').textContent=total();
-  const other=S.score-S.autoSnap-ascDisplay;
-  show(`<div class="res card"><div class="rh">Match Results</div>${nb?'<div class="wh">★ Personal Best ★</div>':''}<div class="rs">${total()}</div>
-  <table><tr><td>Auto</td><td>${S.autoSnap}</td></tr><tr><td>Teleop Ascent</td><td>${ascDisplay}</td></tr><tr><td>Other Teleop</td><td>${other}</td></tr><tr><td>Foul</td><td>0</td></tr></table>
-  <button id="go">Run it again</button></div>`,true);
+const r=S.r,ascLvl=r.hang?(r.rise>=23?3:r.rise>=7?2:1):(inAsc(r.x,r.y)?1:0),ascBonus=PTS.asc[ascLvl],parkBonus=pip(r.x,r.y,OBS)?PTS.park:0;
+let ascDisplay=0;
+if(ascLvl>0&&ascBonus>=parkBonus){add(ascBonus,'','ascFinal');S.cnt.asc=ascLvl;ascDisplay=ascBonus}
+else if(parkBonus>0)add(parkBonus,'','parkFinal');
+S.over=true;S.run=false;rum(0);let prev=0;
+try{prev=+localStorage.getItem('itd-best')||0;if(total()>prev)localStorage.setItem('itd-best',total())}catch(e){}
+const nb=total()>prev&&total()>0;if(nb)$('bs').textContent=total();
+const other=S.score-S.autoSnap-ascDisplay;
+show(`<div class="res card"><div class="rh">Match Results</div>${nb?'<div class="wh">★ Personal Best ★</div>':''}<div class="rs">${total()}</div>
+<table><tr><td>Auto</td><td>${S.autoSnap}</td></tr><tr><td>Teleop Ascent</td><td>${ascDisplay}</td></tr><tr><td>Other Teleop</td><td>${other}</td></tr><tr><td>Foul</td><td>0</td></tr></table>
+<div class="menu">${btn('again','Play again')}${btn('home','Main menu','alt')}</div></div>`,true);
 }
-function show(h,raw){const o=$('ov');o.innerHTML=raw?h:'<div class="card">'+h+'</div>';o.hidden=false;$('go').onclick=start;$('go').focus()}
-function start(){reset();S.run=true;$('ov').hidden=true}
-function hpDraw(){
-  const[X,Y]=P(152,15,0),c=S.clip>0;
-  g.fillStyle='rgba(0,0,0,.25)';g.beginPath();g.ellipse(X,Y,20,7,0,0,7);g.fill();
-  g.fillStyle='#b32a22';g.beginPath();g.roundRect(X-13,Y-56,26,52,6);g.fill();
-  g.fillStyle='#f0d2b4';g.beginPath();g.arc(X,Y-65,8.5,0,7);g.fill();
-  if(c||S.stock>0){g.save();g.translate(X+17,Y-38);g.rotate(c?-.25+Math.sin(S.t*15)*.35:-.55);g.fillStyle='#d9443a';g.fillRect(-10,-3,20,6);g.fillStyle='#fff';g.fillRect(-2,-7,5,4);g.restore()}
-  g.fillStyle='#fff';g.font='700 14px '+FN;g.textAlign='center';g.fillText('Human player',X,Y-82);
-  if(c){g.fillStyle='rgba(255,255,255,.3)';g.fillRect(X-24,Y-78,48,4);g.fillStyle='#ffe600';g.fillRect(X-24,Y-78,48*(1-S.clip/3.5),4)}
+let rumN=0;const MK=[90,60,30,15,10,5];
+const rum=ms=>{try{const p=[...navigator.getGamepads()].find(x=>x),a=p&&(p.vibrationActuator||(p.hapticActuators&&p.hapticActuators[0]));if(!a)return;if(!ms)a.reset&&a.reset();else if(a.playEffect)a.playEffect('dual-rumble',{duration:ms,weakMagnitude:1,strongMagnitude:1});else if(a.pulse)a.pulse(1,ms)}catch(e){}};
+const buzz=s=>S.ru=Math.max(S.ru,S.t+s);
+const btn=(g,t,alt)=>`<button data-go="${g}"${alt?' class="alt"':''}>${t}</button>`;
+function show(h,raw){const o=$('ov');o.innerHTML=raw?h:'<div class="card">'+h+'</div>';o.hidden=false;const b=o.querySelector('button');if(b)b.focus()}
+function start(){reset();viewYaw=S.r.a;if(T3)T3.snap=1;S.run=true;$('ov').hidden=true}
+function pause(){if(!S.run)return;S.paused=!S.paused;rum(0);if(S.paused)show(SCR.pause());else $('ov').hidden=true}
+const live=f=>()=>S.run&&!S.paused&&f();
+const ACTS={act:live(act),climb:live(climb),flip:live(()=>{if(!S.r.hang){S.r.side*=-1;S.r.pendingXfer=false}}),mode:()=>{S.field=!S.field},cam:()=>{camMode=(camMode+1)%3;if(T3)T3.snap=1},full:toggleFull,pause,reset:()=>S.run&&start()};
+const GO={play:start,again:start,resume:pause,
+set:()=>{$('sp').hidden=false;$('sp').querySelector('button').focus()},
+back:()=>{$('sp').hidden=true;const b=$('ov').querySelector('button');if(b&&!$('ov').hidden)b.focus()},
+home:()=>{reset();viewYaw=S.r.a;if(T3)T3.snap=1;show(SCR.home())}};
+$('ov').oninput=e=>{if(e.target.id==='tn'){TEAM=e.target.value=e.target.value.replace(/\D/g,'').slice(0,5);try{localStorage.setItem('itd-team',TEAM)}catch(x){}}};
+$('ov').onclick=$('sp').onclick=e=>{const g=e.target.dataset&&e.target.dataset.go;if(g)GO[g]()};
+const SCR={
+home:()=>`<div class="home"><h1>Into the Deep: Solo Run</h1><p>You are the red alliance. 30 s auto, 8 s transition, then 2:00 of teleop. Ascent counts in the last 30 s.</p><p><label>Team number <input id="tn" inputmode="numeric" maxlength="5" value="${TEAM}" style="font:inherit;width:5.5em;text-align:center;background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:4px"></label></p><div class="menu">${btn('play','Play')}${btn('set','Settings','alt')}</div>
+<details><summary>How to play</summary><ul style="text-align:left"><li><b>Limits:</b> 18 in starting cube, 42 in total horizontal reach (per R104).</li><li><b>Human player:</b> drop a sample in the observation zone (red tape, right side). They clip it and hang it on the wall as a specimen.</li><li><b>Climb:</b> park in the ascent zone for Level 1, press your climb key for Level 2, again for Level 3.</li><li><b>Points:</b> high basket 8, high chamber 10, net 2, low basket 4, low chamber 6, ascent 3, 15, 30. Pieces scored in auto stay on the field.</li></ul></details></div>`,
+pause:()=>`<h1>Paused</h1><div class="menu">${btn('resume','Resume')}${btn('again','Restart','alt')}${btn('set','Settings','alt')}${btn('home','Leave match','alt')}</div>`};
+const C3=$('c3');let T3=null;
+const CAMS=[['3rd person (back)'],['3rd person (front)'],['Claw (1st person)']];
+const viewTarget=()=>S.r.a+(S.r.side<0?Math.PI:0);
+function stepView(dt){const d=Math.atan2(Math.sin(viewTarget()-viewYaw),Math.cos(viewTarget()-viewYaw));viewYaw+=d*Math.min(1,dt*(camMode===2?14:4))}
+const hex=c=>(c[0]<<16)|(c[1]<<8)|c[2];
+function init3(){
+if(typeof THREE==='undefined')return;
+try{
+const rd=new THREE.WebGLRenderer({canvas:C3,antialias:true});rd.setPixelRatio(Math.min(devicePixelRatio||1,2));
+rd.shadowMap.enabled=true;rd.shadowMap.type=THREE.PCFSoftShadowMap;
+const sc=new THREE.Scene(),bgc=0x0a161b;sc.background=new THREE.Color(bgc);sc.fog=new THREE.Fog(bgc,150,340);
+const cam=new THREE.PerspectiveCamera(50,1000/620,1,600);
+sc.add(new THREE.HemisphereLight(0xd6ecf7,0x2b3a40,.75));
+const sun=new THREE.DirectionalLight(0xfff1dc,.85);sun.position.set(10,150,30);sun.target.position.set(72,0,72);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-100,right:100,top:100,bottom:-100,near:10,far:320});sun.shadow.bias=-.0004;sc.add(sun,sun.target);
+const UB=new THREE.BoxGeometry(1,1,1),M=(c,m=0,r=.7)=>new THREE.MeshStandardMaterial({color:c,metalness:m,roughness:r});
+const box=(w,h,d,mt,x,y,z,par=sc)=>{const m=new THREE.Mesh(UB,mt);m.scale.set(w,h,d);m.position.set(x,y,z);m.castShadow=m.receiveShadow=true;par.add(m);return m};
+const cyl=(r,len,mt,x,y,z,ax)=>{const m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,len,16),mt);m.position.set(x,y,z);if(ax==='x')m.rotation.z=Math.PI/2;else if(ax==='z')m.rotation.x=Math.PI/2;m.castShadow=m.receiveShadow=true;sc.add(m);return m};
+const mc={},mat=c=>mc[c]||(mc[c]=M(hex(COL[c]||COL.y),0,.45));
+const vf=new THREE.Mesh(new THREE.PlaneGeometry(700,700),M(0x111d22,0,1));vf.rotation.x=-Math.PI/2;vf.position.set(72,-.1,72);vf.receiveShadow=true;sc.add(vf);
+const tc=document.createElement('canvas');tc.width=tc.height=1024;const t2=tc.getContext('2d'),tw=1024/6;
+for(let i=0;i<6;i++)for(let j=0;j<6;j++){t2.fillStyle=(i+j)%2?'#7a898e':'#849398';t2.fillRect(i*tw,j*tw,tw,tw)}
+for(let k=0;k<7000;k++){t2.fillStyle='rgba(0,0,0,'+(Math.random()*.07)+')';t2.fillRect(Math.random()*1024,Math.random()*1024,1+Math.random()*3,1+Math.random()*3)}
+t2.strokeStyle='rgba(15,25,28,.55)';t2.lineWidth=3;for(let i=0;i<=6;i++){t2.beginPath();t2.moveTo(i*tw,0);t2.lineTo(i*tw,1024);t2.moveTo(0,i*tw);t2.lineTo(1024,i*tw);t2.stroke()}
+const tex=new THREE.CanvasTexture(tc);tex.anisotropy=8;
+const fld=new THREE.Mesh(new THREE.PlaneGeometry(144,144),new THREE.MeshStandardMaterial({map:tex,roughness:.88,metalness:0}));fld.rotation.x=-Math.PI/2;fld.position.set(72,0,72);fld.receiveShadow=true;sc.add(fld);
+const flat=(pts,col,y,op)=>{const m=new THREE.Mesh(new THREE.ShapeGeometry(new THREE.Shape(pts.map(([x,z])=>new THREE.Vector2(x,z)))),new THREE.MeshStandardMaterial({color:col,transparent:true,opacity:op,roughness:.9,side:THREE.DoubleSide,depthWrite:false}));m.rotation.x=Math.PI/2;m.position.y=y;m.receiveShadow=true;sc.add(m);return m};
+const tp=(col,pts,w=1.5)=>{const mt=M(col,0,.6);for(let i=0;i<pts.length-1;i++){const[x1,z1]=pts[i],[x2,z2]=pts[i+1],m=box(Math.hypot(x2-x1,z2-z1)+w*.6,.08,w,mt,(x1+x2)/2,.06,(z1+z2)/2);m.rotation.y=-Math.atan2(z2-z1,x2-x1);m.castShadow=false}};
+flat(OBS,0xc93a30,.03,.45);flat(NET,0xc93a30,.03,.45);flat([[0,0],[24,0],[0,24]],0x3d6fd0,.03,.45);flat([[0,144],[13,144],[13,120],[0,108]],0x3d6fd0,.03,.45);
+tp(0xd93a30,[[131,0],[131,24],[144,36]]);tp(0xd93a30,[[122,144],[144,122]]);tp(0x3d6fd0,[[24,0],[0,24]]);tp(0x3d6fd0,[[13,144],[13,120],[0,108]]);
+const asc=flat(ASC,0x3cc4d0,.035,.4);
+tp(0xf2f6f7,[[48,88],[48,97],[72,107],[96,97],[96,88]],1.6);tp(0xf2f6f7,[[48,56],[48,47],[72,37],[96,47],[96,56]],1.6);
+box(48,.2,32,M(0x22323a,0,.8),72,.1,72);
+const wm=M(0x2b3c42,.2,.6);box(148,12,2,wm,72,6,-1);box(148,12,2,wm,72,6,145);box(2,12,148,wm,-1,6,72);box(2,12,148,wm,145,6,72);
+const pm=M(0xd6dee0,.85,.3),rm=M(0xe8eef0,.85,.3);
+[[49,57],[95,57],[49,87],[95,87]].forEach(([x,y])=>box(2.2,37,2.2,pm,x,18.5,y));
+[20,36].forEach(h=>{cyl(.7,48,rm,72,h,88.7,'x');cyl(.7,48,rm,72,h,55.3,'x')});
+const sm=M(0x3a444a,.5,.5);[56.8,87.2].forEach(y=>cyl(.8,48.2,pm,72,1,y,'x'));[48,96].forEach(x=>cyl(.8,32.2,pm,x,1,72,'z'));
+[49,95].forEach(x=>{cyl(.7,30,rm,x,36,72,'z');[57,87].forEach(y=>cyl(2,.6,sm,x,.3,y))});
+[13,26].forEach(h=>{cyl(.7,32,M(0xd9443a,.4,.4),96.7,h,72,'z');cyl(.7,32,M(0x3d6fd0,.4,.4),47.3,h,72,'z')});
+const glass=new THREE.MeshStandardMaterial({color:0xeaf3f8,transparent:true,opacity:.35,roughness:.15,metalness:.1,side:THREE.DoubleSide,depthWrite:false}),rimM=M(0xf4f8fa,.3,.4),floorM=M(0x788791,.3,.6);
+const bucket=(bx,by,zt)=>{const f=new THREE.Mesh(new THREE.CylinderGeometry(8.49,5.66,9,4,1,true),glass);f.rotation.y=Math.PI/4;f.position.set(bx,zt-4.5,by);sc.add(f);
+box(8,.4,8,floorM,bx,zt-8.8,by);[[0,-6,12.8,.7],[0,6,12.8,.7],[-6,0,.7,12.8],[6,0,.7,12.8]].forEach(([dx,dz,w,d])=>box(w,.6,d,rimM,bx+dx,zt,by+dz))};
+const corner=(px,py,bx,by,pc)=>{box(6,1.4,6,M(0x3a444a,.5,.5),px,.7,py);box(2.4,47,2.4,M(pc,.4,.5),px,24.9,py);bucket(bx,by,25);bucket(bx,by,43)};
+corner(142.5,142.5,136,136,0xc93a30);corner(1.5,1.5,8,8,0x3d6fd0);
+const hp=new THREE.Group();hp.position.set(152,0,15);hp.rotation.y=Math.PI;sc.add(hp);
+const shirt=M(0xb32a22,0,.8);box(10,22,6,M(0x2a2f36,0,.9),0,11,0,hp);box(14,24,8,shirt,0,34,0,hp);box(3.5,20,3.5,shirt,0,34,-9,hp);box(3.5,20,3.5,shirt,0,34,9,hp);
+const hd=new THREE.Mesh(new THREE.SphereGeometry(4.8,20,14),M(0xf0d2b4,0,.8));hd.position.set(0,50,0);hd.castShadow=true;hp.add(hd);
+const tool=box(5,1,1.2,M(0xd9443a,0,.5),4,38,9,hp);
+const alu=M(0xd5dbde,.85,.32),yel=M(0xf2c230,.35,.4),blk=M(0x1a1d20,.2,.7),rub=M(0x121416,0,.95),rg=new THREE.Group();sc.add(rg);
+const pt={};['plate','brk','fL','fR','clip','pl1','pl2','xp'].forEach(n=>pt[n]=box(1,1,1,n==='plate'?alu:n==='clip'?blk:yel,0,0,0,rg));
+const held=box(1,1,1,mat('y'),0,0,0,rg);
+box(5,2.6,3,blk,3.5,5.8,-4,rg);const hb=document.createElement('canvas');hb.width=450;hb.height=340;const h2=hb.getContext('2d'),poly=(c,p)=>{h2.fillStyle=c;h2.beginPath();p.forEach(([x,y],i)=>i?h2.lineTo(x,y):h2.moveTo(x,y));h2.fill()};
+poly('#1c1d20',[[0,0],[450,0],[450,340],[0,340]]);poly('#f26a1b',[[250,0],[450,0],[450,150],[330,150]]);poly('#fff',[[0,150],[450,150],[450,250],[0,250]]);poly('#f26a1b',[[0,250],[170,250],[230,340],[0,340]]);
+h2.fillStyle='#fff';h2.font='italic 700 54px '+FN;h2.fillText('REV',22,80);h2.font='600 15px '+FN;h2.fillText('ROBOTICS',24,100);h2.fillStyle='#1c1d20';h2.textAlign='center';h2.font='700 50px '+FN;h2.fillText('CONTROL HUB',225,215);
+const hubTop=new THREE.MeshStandardMaterial({map:new THREE.CanvasTexture(hb),roughness:.5}),hbk=M(0x1c1d20,.2,.6);
+box(4.9,.3,3.8,M(0x2a2c30,.3,.6),0,4.65,6.4,rg);box(4.5,.9,3.4,[hbk,hbk,hubTop,hbk,hbk,hbk],0,5.25,6.4,rg);
+const WH=[],rg2=new THREE.SphereGeometry(1,10,8),ym=M(0xf2c230,.2,.5),YA=new THREE.Vector3(0,1,0);
+[[-5.5,-10.5],[5.5,-10.5],[-5.5,10.5],[5.5,10.5]].forEach(([p,q])=>{const w=new THREE.Group(),hd=Math.sign(p*q);w.position.set(p,2.25,q);rg.add(w);WH.push({w,p,q,hd});
+const cy=(r,l,z,m)=>{const c=new THREE.Mesh(new THREE.CylinderGeometry(r,r,l,16),m);c.rotation.x=Math.PI/2;c.position.z=z;w.add(c)};
+cy(.9,3.2,0,blk);cy(1.75,.4,-1.3,ym);cy(1.75,.4,1.3,ym);
+for(let i=0;i<12;i++){const a=i/12*Math.PI*2,m=new THREE.Mesh(rg2,rub);m.scale.set(.6,1.5,.6);m.position.set(Math.cos(a)*1.7,Math.sin(a)*1.7,0);m.quaternion.setFromUnitVectors(YA,new THREE.Vector3(-Math.sin(a),Math.cos(a),hd).normalize());m.castShadow=true;w.add(m)}});
+const V=(x,y,z)=>new THREE.Vector3(x,y,z),ori=(g,ax,az)=>g.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(ax,az.clone().cross(ax),az));
+const hubM=M(0x8c969b,.7,.4),mtrM=M(0xf2c230,.3,.5);
+const slide=()=>{const g=new THREE.Group(),st=[];rg.add(g);
+for(let i=0;i<4;i++){const z=(i-1.5)*.6;st.push([box(1,2,.5,alu,0,0,z,g),box(1,.25,.64,rub,0,.6,z,g)])}
+box(2,2,2,hubM,-1,0,0,g);
+[[.8,2,2,mtrM],[.7,.8,3.4,blk]].forEach(([r,l,z,m])=>{const c=new THREE.Mesh(new THREE.CylinderGeometry(r,r,l,16),m);c.rotation.x=Math.PI/2;c.position.set(-1,0,z);c.castShadow=true;g.add(c)});
+g.set=(L,o)=>st.forEach(([a,b],i)=>{const x=i*o+L/2;a.scale.x=L;a.position.x=x;b.scale.x=L-.8;b.position.x=x});return g};
+const TW=[slide(),slide()],HS=slide();
+ori(TW[0],V(0,1,0),V(0,0,-1));ori(TW[1],V(0,1,0),V(0,0,1));TW[0].position.set(-8,6.5,5.4);TW[1].position.set(-8,6.5,-5.4);
+const tc2=document.createElement('canvas');tc2.width=256;tc2.height=128;const pg=tc2.getContext('2d'),ptx=new THREE.CanvasTexture(tc2),pcol='#'+hex(COL[ALLI]).toString(16).padStart(6,'0'),pedge=M(hex(COL[ALLI]),0,.6),pface=new THREE.MeshStandardMaterial({map:ptx,roughness:.6});
+let pk=null,pr=null;
+[1,-1].forEach(s=>box(5.8,2.9,.3,[pedge,pedge,pedge,pedge,pface,pface],0,3,s*9.15,rg));
+const put=(m,p,q,zb,l,w,h)=>{m.scale.set(l,h,w);m.position.set(p,zb+h/2,q)};
+const ring=new THREE.Mesh(new THREE.RingGeometry(3.4,4.3,32),new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.85,side:THREE.DoubleSide,depthWrite:false}));ring.rotation.x=-Math.PI/2;ring.position.y=.12;sc.add(ring);
+const items=new THREE.Group(),bg=new THREE.Group();sc.add(items,bg);const dm=box(2.6,1.5,2.6,mat('y'),0,-9,0);
+const IM=new Map();let bk='',camP=new THREE.Vector3(),camT=new THREE.Vector3();
+const mkItem=o=>{const gp=new THREE.Group();
+if(o.hung){box(1.5,6,2,mat(o.c),0,3,0,gp);box(2,1.6,2.2,blk,0,5.8,0,gp)}
+else{box(4.4,1.8,1.8,mat(o.c),0,.9,0,gp);if(o.t==='p')box(1,.9,2.8,M(0xfafafa,0,.5),0,2.25,0,gp)}
+return gp};
+T3={rd,size:w=>{const h=w*.62;rd.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix()},cam,snap:1,
+frame:dt=>{
+const r=S.r,side=r.side||1,zh=r.H,th=Math.max(22,zh+10),reach=OUT+2+r.E,tipP=side*reach,jg=1.1+2.3*(r.jaw??1),[tx,ty]=tip();
+rg.position.set(r.x,r.rise,r.y);rg.rotation.y=-r.a;
+if(pr&&Math.abs(r.x-pr[0])+Math.abs(r.y-pr[1])<20){const dx=r.x-pr[0],dy=r.y-pr[1],da=Math.atan2(Math.sin(r.a-pr[2]),Math.cos(r.a-pr[2])),ca=Math.cos(r.a),sa=Math.sin(r.a),u=dx*ca+dy*sa,v=dy*ca-dx*sa;WH.forEach(o=>o.w.rotation.z-=(u-o.q*da+o.hd*(v+o.p*da))/2.3)}pr=[r.x,r.y,r.a];
+if(pk!==TEAM){pk=TEAM;pg.fillStyle=pcol;pg.fillRect(0,0,256,128);pg.fillStyle='#fff';pg.textAlign='center';pg.textBaseline='middle';pg.font='700 100px '+FN;const t=TEAM||'----',wd=pg.measureText(t).width;if(wd>236)pg.font='700 '+Math.floor(100*236/wd)+'px '+FN;pg.fillText(t,128,68);ptx.needsUpdate=true}
+put(pt.plate,0,0,1.5,18,18,3);TW.forEach(t=>t.set(20,(th-22)/3));put(pt.pl1,-5.5,6.85,zh+3.6,6.4,.6,5.2);put(pt.pl2,-5.5,-6.85,zh+3.6,6.4,.6,5.2);put(pt.xp,-2.6,0,zh+3.6,.6,14.3,5.2);
+HS.position.set(-side*3.5,zh+6,0);ori(HS,V(side,0,0),V(0,0,1));HS.set(13.5,r.E/3);put(pt.brk,side*(reach-1.9),0,zh+4.6,2.8,4.6,2.6);put(pt.fL,tipP,-jg,zh,2.6,1.2,7);put(pt.fR,tipP,jg,zh,2.6,1.2,7);
+held.visible=!!r.hold;pt.clip.visible=r.hold==='p';
+if(r.hold){held.material=mat(r.hc||'y');put(held,tipP,0,zh+.6,4.4,1.8,1.8);put(pt.clip,tipP,0,zh+2.4,3.2,1,.8)}
+ring.position.set(tx,.12,ty);ring.material.color.setHex(r.hold?0x5be3a1:0xffffff);
+asc.visible=S.t>=128;asc.material.color.setHex(inAsc(r.x,r.y)?0x5be3a1:0x3cc4d0);
+const seen=new Set();
+for(const o of S.items){let m=IM.get(o);if(!m){m=mkItem(o);IM.set(o,m);items.add(m)}seen.add(o);
+if(o.hung)m.position.set(o.x,(o.hung==='hi'?26:13)-6,o.y);
+else{const age=o.born!=null?S.t-o.born:9,bz=age<.35?(.35-age)*10:0;m.position.set(o.x,(o.w?3.5:0)+bz,o.y);m.rotation.y=-o.a}}
+for(const[o,m]of IM)if(!seen.has(o)){items.remove(m);IM.delete(o)}
+const k=S.bskt.hi.join('')+'|'+S.bskt.lo.join('');
+if(k!==bk){bk=k;while(bg.children.length)bg.remove(bg.children[0]);
+[[S.bskt.hi,43],[S.bskt.lo,25]].forEach(([arr,zt])=>arr.slice(-10).forEach((cc,i)=>{const ang=i*2.1,rad=1.6+(i%3)*.9,m=box(2.6,1.5,2.6,mat(cc),136+Math.cos(ang)*rad,zt-8+(i%4)*1.5+.75,136+Math.sin(ang)*rad,bg);m.rotation.y=-ang}))}
+if(S.drop){const t=clamp((S.t-S.drop.t)/.4,0,1);dm.material=mat(r.hc||'y');dm.position.set(S.drop.x,S.drop.z*(1-t)+S.drop.to*t+.75,S.drop.y);dm.rotation.y=-S.drop.t*3}else dm.position.y=-9;
+tool.visible=S.clip>0||S.stock>0;tool.rotation.z=S.clip>0?-.25+Math.sin(S.t*15)*.35:-.55;
+const fx=Math.cos(viewYaw),fz=Math.sin(viewYaw),fpv=camMode===2,[off,hgt,ah,sh]=[[-38-r.E*.5,30,reach*.6+10,-24],[reach+30,28,reach*.4,24],[reach-8,7,reach+6,0]][camMode],kk=T3.snap||fpv?1:Math.min(1,dt*9),fv=fpv?75+zh*.45:60+r.E*.5+zh*.15;T3.snap=0;
+if(cam.fov!==fv){cam.fov=fv;cam.updateProjectionMatrix()}
+camP.lerp(new THREE.Vector3(clamp(r.x+fx*off-fz*sh,-30,174),hgt+r.rise+zh*(fpv?1:.4),clamp(r.y+fz*off+fx*sh,-30,174)),kk);
+camT.lerp(new THREE.Vector3(r.x+fx*ah,(fpv?zh*.5+2:6+zh*.6)+r.rise,r.y+fz*ah),kk);
+cam.position.copy(camP);cam.lookAt(camT);
+rg.children.forEach(c=>c.visible=!fpv||c===pt.fL||c===pt.fR||c===held||c===pt.clip);held.visible=!!r.hold;pt.clip.visible=r.hold==='p';
+rd.render(sc,cam)}};
+}catch(e){T3=null}
 }
-function robot(){
-  const r=S.r,z0=r.rise,a=r.a,side=r.side||1,c=Math.cos(a),s=Math.sin(a),L=(p,q)=>[r.x+p*c-q*s,r.y+p*s+q*c];
-  const part=(arr,p,q,z,l,w,h,col,ang)=>{const[x,y]=L(p,q),[u,v]=R(x,y);arr.push({d:u+v,f:()=>OB(x,y,z,l,w,h,ang==null?a:ang,col)})};
-  const G1=[],G2=[];
-  part(G1,0,0,z0+1.5,18,18,3,[226,236,239]);
-  [[-5.5,-10.5],[5.5,-10.5],[-5.5,10.5],[5.5,10.5]].forEach(([p,q])=>part(G1,p,q,z0,7,3,4.5,[54,60,64]));
-  G1.sort((m,n)=>m.d-n.d).forEach(o=>o.f());
-  const th=Math.max(22,r.H+10),zh=z0+r.H,E=r.E,jaw=r.jaw??1,jgap=1.1+2.3*jaw;
-  const reach=OUT+2+E,tipP=side*reach,midP=side*(OUT+reach)/2,wristAng=a+(side<0?Math.PI:0);
-  // fixed vertical slide -- never moves or mirrors
-  part(G2,-6,0,z0+4.5,3,11,th,[235,235,230]);
-  part(G2,-4.8,0,zh+3.6,4,8.6,5.2,[242,194,48]);
-  // wrist bracket -- sits right at the chassis edge, on whichever side matches the current orientation
-  part(G2,side*OUT,0,zh+4.6,2.8,4.6,2.6,[242,194,48]);
-  part(G2,midP,0,zh+4.9,reach-OUT-1,3,2.2,[232,232,227],wristAng);
-  [-jgap,jgap].forEach(q=>part(G2,tipP,q,zh,2.6,1.2,7,[242,194,48],wristAng));
-  if(r.hold){part(G2,tipP,0,zh+.6,1.8,4.4,1.8,COL[r.hc||'y'],wristAng+Math.PI/2);if(r.hold==='p')part(G2,tipP,0,zh+2.4,1,3.2,.8,[30,30,30],wristAng+Math.PI/2)}
-  G2.sort((m,n)=>m.d-n.d).forEach(o=>o.f());
-}
+const render3=dt=>{if(T3)T3.frame(dt)};
 function draw(){
-  updateCam();
-  const d=C.width/1000;g.setTransform(d,0,0,d,0,0);
-  const bg=g.createLinearGradient(0,0,0,620);bg.addColorStop(0,'#0c1f26');bg.addColorStop(1,'#16343f');g.fillStyle=bg;g.fillRect(0,0,1000,620);
-  const lab=(t,x,y)=>{const[X,Y]=P(x,y,0);g.fillStyle='rgba(15,30,35,.6)';g.font='600 15px '+FN;g.textAlign='center';g.fillText(t,X,Y)};
-  poly([[0,0],[F,0],[F,F],[0,F]],'#808f94');
-  for(let i=24;i<F;i+=24){pl('rgba(255,255,255,.13)',1,[i,0],[i,F]);pl('rgba(255,255,255,.13)',1,[0,i],[F,i])}
-  poly(OBS,'rgba(201,58,48,.28)');poly(NET,'rgba(201,58,48,.28)');poly([[0,0],[24,0],[0,24]],'rgba(61,111,208,.28)');poly([[0,144],[13,144],[13,120],[0,108]],'rgba(61,111,208,.28)');
-  pl('#d93a30',3.5,[131,0],[131,24],[144,36]);pl('#d93a30',3.5,[122,144],[144,122]);pl('#3d6fd0',3.5,[24,0],[0,24]);pl('#3d6fd0',3.5,[13,144],[13,120],[0,108]);
-  lab('Observation',137,46);lab('Net zone',133,128);
-  if(S.t>=128)poly(ASC,inAsc(S.r.x,S.r.y)?'rgba(91,227,161,.45)':'rgba(60,196,208,.35)');
-  pl('#f2f6f7',3,[48,88],[48,97],[72,107],[96,97],[96,88]);pl('#f2f6f7',3,[48,56],[48,47],[72,37],[96,47],[96,56]);lab('Ascent zone',72,103);
-  poly([[48,56],[96,56],[96,88],[48,88]],'#22323a');
-  const r=S.r,[tx,ty]=tip();
-  poly([[r.x-9,r.y-9],[r.x+9,r.y-9],[r.x+9,r.y+9],[r.x-9,r.y+9]].map(([x,y])=>{const c=Math.cos(r.a),s=Math.sin(r.a),p=x-r.x,q=y-r.y;return[r.x+p*c-q*s,r.y+p*s+q*c]}),'rgba(0,0,0,.25)');
-  hpDraw();
-  const wall=(u1,v1,u2,v2,h,c)=>fillQ([P2(u1,v1,0),P2(u2,v2,0),P2(u2,v2,h),P2(u1,v1,h)],c);
-  wall(0,0,0,F,12,'#2b3c42');wall(0,0,F,0,12,'#34474e');
-  {const[X,Y]=P(tx,ty,0);g.strokeStyle=r.hold?'#5be3a1':'rgba(255,255,255,.75)';g.lineWidth=2;g.beginPath();g.ellipse(X,Y,15,7.5,0,0,7);g.stroke()}
-  const E=[],ent=(x,y,f)=>{const[u,v]=R(x,y);E.push({d:u+v,f})};
-  S.items.forEach(o=>ent(o.x,o.y,()=>{
-    if(o.hung){const top=o.hung==='hi'?26:13;OB(o.x,o.y,top-6,1.5,2,6,0,COL[o.c]);OB(o.x,o.y,top-1,2,2.2,1.6,0,[30,30,30]);return}
-    const age=o.born!=null?S.t-o.born:9,bz=age<.35?(.35-age)*10:0,z=(o.w?3.5:0)+bz;
-    OB(o.x,o.y,z,4.4,1.8,1.8,o.a,COL[o.c]);if(o.t==='p')OB(o.x,o.y,z+1.8,1,2.8,.9,o.a,[250,250,250]);
-  }));
-  [[49,57],[95,57],[49,87],[95,87]].forEach(([x,y])=>ent(x,y,()=>OB(x,y,0,2.2,2.2,37,0,[214,222,224])));
-  [13,26].forEach(h=>{ent(96.7,72,()=>OB(96.7,72,h-.7,1.4,32,1.4,0,[217,68,58]));ent(47.3,72,()=>OB(47.3,72,h-.7,1.4,32,1.4,0,[61,111,208]))});
-  [20,36].forEach(h=>{ent(72,88.7,()=>OB(72,88.7,h-.7,48,1.4,1.4,0,[232,238,240]));ent(72,55.3,()=>OB(72,55.3,h-.7,48,1.4,1.4,0,[232,238,240]))});
-  const bucket=(cx,cy,zt,items)=>ent(cx,cy,()=>{const ring=(w,z)=>[[-w,-w],[w,-w],[w,w],[-w,w]].map(([p,q])=>{const[u,v]=R(cx+p,cy+q);return P2(u,v,z)}),T=ring(6,zt),Bm=ring(4,zt-9);
-    fillQ(Bm,'rgba(120,135,145,.9)');
-    (items||[]).slice(-10).forEach((cc,i)=>{const ang=i*2.1,rad=1.6+(i%3)*.9;OB(cx+Math.cos(ang)*rad,cy+Math.sin(ang)*rad,zt-8+(i%4)*1.5,2.6,2.6,1.5,ang,COL[cc]||COL.y)});
-    [0,1,2,3].map(i=>{const j=(i+1)%4;return{f:[T[i],T[j],Bm[j],Bm[i]],d:T[i][1]+T[j][1]}}).sort((m,n)=>m.d-n.d).forEach(o=>fillQ(o.f,'rgba(236,243,248,.42)'));
-    g.strokeStyle='rgba(255,255,255,.95)';g.lineWidth=1.8;g.beginPath();T.forEach(([x,y],i)=>i?g.lineTo(x,y):g.moveTo(x,y));g.closePath();g.stroke()});
-  const corner=(px,py,bx,by,pc,bs)=>{bucket(bx,by,25,bs&&bs.lo);bucket(bx,by,43,bs&&bs.hi);ent(px,py,()=>{OB(px,py,0,6,6,1.4,0,[58,68,74]);OB(px,py,1.4,2.4,2.4,47,0,pc)})};
-  corner(142.5,142.5,136,136,[201,58,48],S.bskt);corner(1.5,1.5,8,8,[61,111,208]);
-  if(S.drop){const t=clamp((S.t-S.drop.t)/.4,0,1),z=S.drop.z*(1-t)+S.drop.to*t;ent(S.drop.x,S.drop.y,()=>OB(S.drop.x,S.drop.y,z,2.6,2.6,1.5,S.drop.t*3,COL[r.hc||'y']))}
-  ent(r.x,r.y,robot);
-  E.sort((m,n)=>m.d-n.d).forEach(o=>o.f());
-  if(r.H>2||r.rise>0){const[X1,Y1]=P(tx,ty,0),[X2,Y2]=P(tx,ty,r.rise+r.H);g.strokeStyle='rgba(255,255,255,.55)';g.lineWidth=1.5;g.setLineDash([5,4]);g.beginPath();g.moveTo(X1,Y1);g.lineTo(X2,Y2);g.stroke();g.setLineDash([])}
-  wall(F,0,F,F,3,'#1c2a2f');wall(0,F,F,F,3,'#243238');
-  if(S.run&&ph()===3){const z=inAsc(r.x,r.y);g.fillStyle='rgba(5,20,26,.75)';g.fillRect(200,10,600,38);g.fillStyle=r.hang?'#ffe600':'#5be3a1';g.font='700 22px '+FN;g.textAlign='center';
-    g.fillText(r.hang?(r.want>=3?'HANGING: going for Level 3':'HANGING: Level 2 (press '+kn(B.climb)+' again for Level 3)'):z?'Press '+kn(B.climb)+' to climb (once = Level 2, twice = Level 3)':'ENDGAME: drive into the glowing ascent zone',500,35)}
-  if(ph()===1){g.fillStyle='rgba(5,20,26,.5)';g.fillRect(0,0,1000,620);g.fillStyle='#fff';g.textAlign='center';g.font='700 40px '+FN;g.fillText('TRANSITION',500,290);g.font='700 80px '+FN;g.fillText(Math.ceil(38-S.t),500,370)}
-  if(S.run&&S.paused){g.fillStyle='rgba(5,20,26,.6)';g.fillRect(0,0,1000,620);g.fillStyle='#fff';g.textAlign='center';g.font='700 44px '+FN;g.fillText('PAUSED',500,300);g.font='600 20px '+FN;g.fillText('Press '+kn(B.pause)+' to resume',500,335)}
-  g.textAlign='center';g.font='700 26px '+FN;
-  S.pops.forEach(p=>{const[X,Y]=P(p.x,p.y,24+(1-p.life)*20);g.fillStyle=`rgba(255,255,255,${p.life})`;g.strokeStyle=`rgba(0,0,0,${p.life})`;g.lineWidth=3;g.strokeText(p.txt,X,Y);g.fillText(p.txt,X,Y)});
+const d=C.width/1000;g.setTransform(d,0,0,d,0,0);g.clearRect(0,0,1000,620);
+const r=S.r,pj=(x,y,z=0)=>{if(!T3)return null;const v=new THREE.Vector3(x,z,y).project(T3.cam);return v.z<1?[(v.x*.5+.5)*1000,(-v.y*.5+.5)*620]:null};
+if(!T3){g.fillStyle='#0c1f26';g.fillRect(0,0,1000,620);g.fillStyle='#fff';g.textAlign='center';g.font='700 26px '+FN;g.fillText('3D view unavailable: WebGL or the Three.js CDN failed to load.',500,310)}
+else{
+const lab=(t,x,y,z,col)=>{const p=pj(x,y,z);if(!p)return;g.fillStyle=col;g.font='600 15px '+FN;g.textAlign='center';g.fillText(t,p[0],p[1])};
+lab('Observation',137,46,.5,'rgba(255,255,255,.7)');lab('Net zone',133,128,.5,'rgba(255,255,255,.7)');lab('Ascent zone',72,103,.5,'rgba(255,255,255,.7)');lab('Human player',152,15,60,'#fff');
+if(S.clip>0){const p=pj(152,15,66);if(p){g.fillStyle='rgba(255,255,255,.3)';g.fillRect(p[0]-24,p[1]-26,48,4);g.fillStyle='#ffe600';g.fillRect(p[0]-24,p[1]-26,48*(1-S.clip/HP.time),4)}}
+}
+g.fillStyle='rgba(255,255,255,.8)';g.font='600 15px '+FN;g.textAlign='left';g.fillText('View: '+CAMS[camMode][0]+' ('+kn(B.cam)+')',12,22);
+if(S.run&&ph()===3){const z=inAsc(r.x,r.y);g.fillStyle='rgba(5,20,26,.75)';g.fillRect(200,10,600,38);g.fillStyle=r.hang?'#ffe600':'#5be3a1';g.font='700 22px '+FN;g.textAlign='center';
+g.fillText(r.hang?(r.want>=3?'HANGING: going for Level 3':'HANGING: Level 2 (press '+kn(B.climb)+' again for Level 3)'):z?'Press '+kn(B.climb)+' to climb (once = Level 2, twice = Level 3)':'ENDGAME: drive into the glowing ascent zone',500,35)}
+if(ph()===1){g.fillStyle='rgba(5,20,26,.5)';g.fillRect(0,0,1000,620);g.fillStyle='#fff';g.textAlign='center';g.font='700 40px '+FN;g.fillText('TRANSITION',500,290);g.font='700 80px '+FN;g.fillText(Math.ceil(38-S.t),500,370)}
+g.textAlign='center';g.font='700 26px '+FN;
+S.pops.forEach(q=>{const p=pj(q.x,q.y,24+(1-q.life)*20);if(!p)return;g.fillStyle=`rgba(255,255,255,${q.life})`;g.strokeStyle=`rgba(0,0,0,${q.life})`;g.lineWidth=3;g.strokeText(q.txt,p[0],p[1]);g.fillText(q.txt,p[0],p[1])});
 }
 const fm=x=>{x=Math.max(0,Math.ceil(x));return Math.floor(x/60)+':'+String(x%60).padStart(2,'0')};
 function hud(dt){
-  const r=S.r,t=S.t,p=ph(),c=S.cnt;
-  S.pops.forEach(q=>q.life-=dt);S.pops=S.pops.filter(q=>q.life>0);msgT-=dt;
-  $('tm').textContent=p===0?fm(30-t):p===1?fm(38-t):fm(158-t);$('sc').textContent=total();
-  $('ph').textContent=S.over?'Final':!S.run?'Ready':['Auto','Transition','Teleop','Endgame'][p];
-  $('sN').textContent=c.net;$('sB').textContent=c.bh;$('sB2').textContent=c.bl;$('sC').textContent=c.ch;$('sC2').textContent=c.cl;$('sA').textContent=c.asc;
-  $('hd').textContent=r.hold==='p'?'specimen':r.hold==='s'?'sample':'nothing';
-  $('lf').textContent=r.H.toFixed(0)+' / '+LIM.height+' in';$('rb').textContent=(LIM.body+r.E).toFixed(0)+' / '+LIM.len+' in';
-  $('rc').className=LIM.body+r.E>=LIM.len-.5?'bad':'';$('dm').textContent=S.field?'field-centric':'robot-centric';
-  $('hp').textContent=S.clip>0?'clipping ('+Math.ceil(S.clip)+'s)':S.pend?'next in line':S.stock>0?'ready, '+S.stock+' on the wall queue':'waiting for a sample';
-  const cl=kn(B.climb),z=inAsc(r.x,r.y);let h='Reach into the submersible to intake. Blue samples are the other alliance\'s, so the intake ignores them.';
-  if(!S.run)h='';else if(p===1)h='Transition: hands off the controls. Teleop starts in '+Math.ceil(38-t)+'.';
-  else if(r.hang)h=r.want>=3?(r.rise>=23?'Level 3 reached. Hold on until the buzzer.':'Climbing to the high rung (Level 3)...'):(r.rise>=7?'Level 2 hang. Press '+cl+' again for Level 3.':'Hooking the low rung...');
-  else if(msgT>0)h=msgS;else if(p===3&&z)h='In the ascent zone. Press '+cl+' to climb: once for Level 2, twice for Level 3. Staying parked here is Level 1.';
-  else if(p===3)h='Endgame: drive into the glowing ascent zone (white trapezoid below the submersible), then press '+cl+'.';
-  else if(r.hold==='s')h='Sample: score it, or drop it in the observation zone (red tape, right side) so the human player can clip it.';
-  else if(r.hold==='p')h='Specimen: hang it on the red chamber, the right face of the submersible.';
-  else if(t<1)h='Your preloaded specimen is in the intake. Take it to the chamber.';
-  $('hint').textContent=h;$('fsHint').textContent=kn(B.full)+' full screen \u00b7 '+kn(B.pause)+' pause \u00b7 '+kn(B.flip)+' flip arm \u00b7 '+kn(B.reset)+' reset';
+const r=S.r,t=S.t,p=ph(),c=S.cnt;
+S.pops.forEach(q=>q.life-=dt);S.pops=S.pops.filter(q=>q.life>0);msgT-=dt;
+$('tm').textContent=p===0?fm(30-t):p===1?fm(38-t):fm(158-t);$('sc').textContent=total();
+$('ph').textContent=S.over?'Final':!S.run?'Ready':['Auto','Transition','Teleop','Endgame'][p];
+$('sN').textContent=c.net;$('sB').textContent=c.bh;$('sB2').textContent=c.bl;$('sC').textContent=c.ch;$('sC2').textContent=c.cl;$('sA').textContent=c.asc;
+$('hd').textContent=r.hold==='p'?'specimen':r.hold==='s'?'sample':'nothing';
+$('lf').textContent=r.H.toFixed(0)+' / '+LIM.height+' in';$('rb').textContent=(LIM.body+r.E).toFixed(0)+' / '+LIM.len+' in';
+$('rc').className=LIM.body+r.E>=LIM.len-.5?'bad':'';$('dm').textContent=S.field?'camera-relative':'robot-relative';
+$('hp').textContent=S.clip>0?'clipping ('+Math.ceil(S.clip)+'s)':S.pend?'next in line':S.stock>0?'ready, '+S.stock+' on the wall queue':'waiting for a sample';
+const cl=kn(B.climb),z=inAsc(r.x,r.y);let h='Reach into the submersible to intake. Blue samples are the other alliance\'s, so the intake ignores them.';
+if(!S.run)h='';else if(p===1)h='Transition: hands off the controls. Teleop starts in '+Math.ceil(38-t)+'.';
+else if(r.hang)h=r.want>=3?(r.rise>=23?'Level 3 reached. Hold on until the buzzer.':'Climbing to the high rung (Level 3)...'):(r.rise>=7?'Level 2 hang. Press '+cl+' again for Level 3.':'Hooking the low rung...');
+else if(msgT>0)h=msgS;else if(p===3&&z)h='In the ascent zone. Press '+cl+' to climb: once for Level 2, twice for Level 3. Staying parked here is Level 1.';
+else if(p===3)h='Endgame: drive into the glowing ascent zone (white trapezoid below the submersible), then press '+cl+'.';
+else if(r.hold==='s')h='Sample: score it, or drop it in the observation zone (red tape, right side) so the human player can clip it.';
+else if(r.hold==='p')h='Specimen: hang it on the red chamber, the right face of the submersible.';
+else if(t<1)h='Your preloaded specimen is in the intake. Take it to the chamber.';
+$('hint').textContent=h;$('fsHint').textContent=kn(B.full)+' full screen \u00b7 '+kn(B.pause)+' pause \u00b7 '+kn(B.flip)+' flip arm \u00b7 '+kn(B.reset)+' reset';
 }
 let last=performance.now();
-function loop(now){const dt=Math.min(.05,(now-last)/1000);last=now;if(camAuto)camAngle+=dt*(2*Math.PI/50);if(S.run&&!S.paused)update(dt);hud(S.run?dt:0);draw();requestAnimationFrame(loop)}
+function loop(now){const dt=Math.min(.05,(now-last)/1000);last=now;stepView(dt);const P=pad();if(S.run&&!S.paused)update(dt,P);hud(S.run?dt:0);render3(dt);draw();requestAnimationFrame(loop)}
 function fit(){
-  const el=document.getElementById('fsRoot'),isFS=!!(el&&el.classList.contains('fsOn')),d=Math.min(devicePixelRatio||1,2);
-  let w;
-  if(isFS){
-    const sbEl=el.querySelector('.sb'),sbH=sbEl?sbEl.getBoundingClientRect().height:80;
-    const availH=window.innerHeight-sbH-40;
-    w=Math.max(240,Math.min(window.innerWidth-28,availH/.62));
-  }else w=C.getBoundingClientRect().width;
-  C.width=Math.round(w*d);C.height=Math.round(w*d*.62);
-  if(isFS){C.style.width=w+'px';C.style.height=(w*.62)+'px'}else{C.style.width='';C.style.height=''}
+const el=document.getElementById('fsRoot'),isFS=!!(el&&el.classList.contains('fsOn')),d=Math.min(devicePixelRatio||1,2);
+let w;
+if(isFS){
+const sbEl=el.querySelector('.sb'),sbH=sbEl?sbEl.getBoundingClientRect().height:80;
+const availH=window.innerHeight-sbH-40;
+w=Math.max(240,Math.min(window.innerWidth-28,availH/.62));
+}else w=C.getBoundingClientRect().width;
+C.width=Math.round(w*d);C.height=Math.round(w*d*.62);
+if(isFS){C.style.width=w+'px';C.style.height=(w*.62)+'px'}else{C.style.width='';C.style.height=''}
+if(T3)T3.size(w);
 }
 addEventListener('resize',fit);
 try{$('bs').textContent=+localStorage.getItem('itd-best')||0}catch(e){}
-initSetup();reset();keys();gpKeys();sliders();fit();
-show(`<h1>Into the Deep: Solo Run</h1><p>You are the red alliance, viewed from a field corner. 30 s auto, an 8 s transition where the robot is frozen, then 2:00 of teleop. Ascent counts in the last 30 s.</p>
-<ul><li><b>Limits:</b> 18 in starting cube, 42 in total horizontal reach (per R104). The rules set no real height cap, so lift freely.</li>
-<li><b>Human player:</b> drop a sample in the observation zone (red tape, right side). They take it, clip it, and hang it on the wall as a specimen.</li>
-<li><b>Climb:</b> park in the ascent zone for Level 1. Press your climb key for Level 2, then again for Level 3.</li>
-<li><b>Points:</b> high basket 8, high chamber 10, net 2, low basket 4, low chamber 6, ascent 3, 15, 30. Pieces scored in auto stay on the field, so they count again at the end of teleop.</li></ul>
-<p>Drive is field-centric relative to the screen. Rebind any key or adjust speeds in the panel beside the field.</p>
-<div style="display:grid;grid-template-columns:1fr auto;gap:2px 12px;font-size:14px;margin:6px 0 2px">${ACT.map(([a,l])=>`<span>${l}</span><b>${kn(B[a])}</b>`).join('')}</div>
-<button id="go">Start match</button>`);
+if(location.hash==='#test'){const sv=S;try{for(const a of[0,.4,Math.PI/4,1.2]){S={r:{x:60,y:20,a},items:[{x:60,y:40},{x:66,y:40},{x:54,y:40},{x:60,y:36}]};
+for(let i=0;i<400;i++){S.r.y+=.5;pushItems();const c=Math.cos(a),s=Math.sin(a);
+for(const o of S.items){const dx=o.x-S.r.x,dy=o.y-S.r.y;if(Math.abs(dx*c+dy*s)<HB-.5&&Math.abs(dy*c-dx*s)<HB-.5)throw Error('piece under robot, heading '+a)}}}
+if(!armHit(49,70,-Math.PI/2,30,5)||armHit(49,70,-Math.PI/2,40,5))throw Error('arm/post check');console.log('push self-check ok')}catch(e){console.error('push self-check FAILED',e)}S=sv}
+initSetup();reset();viewYaw=S.r.a;keys();gpKeys();sliders();init3();fit();
+show(SCR.home());
 requestAnimationFrame(loop);
 </script>
 </body>
